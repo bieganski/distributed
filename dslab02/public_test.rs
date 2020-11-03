@@ -7,6 +7,7 @@ mod tests {
     #[test]
     #[timeout(200)]
     fn smoke_test() {
+        println!("ktos odpalil lambde!");
         let (tx, rx) = unbounded();
         let pool = Threadpool::new(1);
 

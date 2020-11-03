@@ -6,8 +6,8 @@ use std::thread::spawn;
 use std::thread::JoinHandle;
 
 pub struct Threadpool {
-    threads: Vec<JoinHandle<i32>>,
-    shared: Arc<(Mutex<Vec<Task>>, Condvar)>,
+    threads: Vec<JoinHandle<()>>,
+    shared: Arc<(Mutex<Vec<Option<Task>>>, Condvar)>,
 }
 
 impl Threadpool {
@@ -15,42 +15,28 @@ impl Threadpool {
         let shared = Arc::new((Mutex::new(Vec::new()), Condvar::new()));
         let mut ts = Vec::new();
         
-
+        let not_empty = |v: & Vec<Option<Task>>| !v.is_empty();
+        
         for _ in 0.._workers_count {
-            //let x = shared.clone();
-            //let (lock, cond) = x;
+            let x = shared.clone(); 
             
-            // let mut guard = lock.lock().unwrap();
-            let not_empty = |v: & Vec<Task>| !v.is_empty();
-            // let x = guard.deref();
-            //while !predicate(guard.deref()) {
-
-            //}
-            //let mut x= lock.lock().unwrap();
-            //let &mut guard = &mut *x;
-            //while !predicate(guard) {
-                // If the predicate does not hold, call `wait`. It atomically
-                // releases the mutex and waits for a notify. The while loop is
-                // required because of possible spurious wakeups.
-           //     let y = cond.wait(x).unwrap();
-           // }
-
-           let x = shared.clone(); 
             ts.push(spawn(move || {
                 loop {
-                let (lock, cond) = &*x; 
-                let mut guard = lock.lock().unwrap();
-                while !not_empty(guard.deref()) {
-                    guard = cond.wait(guard).unwrap();   
+                    let (lock, cond) = &*x; 
+                    let mut guard = lock.lock().unwrap();
+                    while !not_empty(guard.deref()) {
+                        guard = cond.wait(guard).unwrap();   
+                    }
+                    // vec not empty
+                    let task = (*guard).pop();
+                    match task {
+                        Some(task) => match task {
+                            Some(task) => task(),
+                            None       => return, 
+                        },
+                        None       => panic!("internal logic error"),
+                    }
                 }
-                // vec not empty
-                let task = (*guard).pop();
-                match task {
-                    Some(task) => (*task)(),
-                    None       => panic!("internal logic error"),
-                }
-                }
-                // return 0;
             }));
         }
 
@@ -58,14 +44,12 @@ impl Threadpool {
             threads: ts,
             shared: shared,
         }
-        // unimplemented!()
     }
 
-    pub fn submit(&self, _task: Task) {
-        // unimplemented!()
+    pub fn submit(&self, task: Task) {
         let (lock, cond) = &*self.shared;
         let mut guard = lock.lock().unwrap();
-        guard.push(_task);
+        guard.push(Some(task));
         cond.notify_all();
     }
 }
@@ -85,13 +69,14 @@ impl Threadpool {
 
 impl Drop for Threadpool {
     fn drop(&mut self) {
+        for _ in &self.threads {
+            let (lock, cond) = &*self.shared;
+            let mut guard = lock.lock().unwrap();
+            guard.push(None);
+            cond.notify_all();
+        }
         while let Some(t) = self.threads.pop() {
-            //println!(t);
             t.join().unwrap();
         }
-        //for t in &self.threads {
-        //    (*t).join().unwrap();
-        //}
-        // unimplemented!()
     }
 }
