@@ -1,0 +1,18 @@
+[package]
+name = "lab-02"
+version = "0.1.0"
+authors = ["Filip Plata <fp371335@students.mimuw.edu.pl>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rand = "0.7"
+
+[dev-dependencies]
+crossbeam-channel = "0.4"
+ntest = "0.7"
+
+[[bin]]
+name = "lab02"
+path = "main.rs"
