@@ -21,7 +21,7 @@ impl Threadpool {
             //let (lock, cond) = x;
             
             // let mut guard = lock.lock().unwrap();
-            let predicate = |v: & Vec<Task>| !v.is_empty();
+            let not_empty = |v: & Vec<Task>| !v.is_empty();
             // let x = guard.deref();
             //while !predicate(guard.deref()) {
 
@@ -35,14 +35,22 @@ impl Threadpool {
            //     let y = cond.wait(x).unwrap();
            // }
 
-            
+           let x = shared.clone(); 
             ts.push(spawn(move || {
-                let (lock, cond) = &*shared.clone();
+                loop {
+                let (lock, cond) = &*x; 
                 let mut guard = lock.lock().unwrap();
-                while !predicate(guard.deref()) {
+                while !not_empty(guard.deref()) {
                     guard = cond.wait(guard).unwrap();   
                 }
-                return 0;
+                // vec not empty
+                let task = (*guard).pop();
+                match task {
+                    Some(task) => (*task)(),
+                    None       => panic!("internal logic error"),
+                }
+                }
+                // return 0;
             }));
         }
 
