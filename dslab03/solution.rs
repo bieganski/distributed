@@ -70,9 +70,8 @@ impl FibonacciModule {
     pub(crate) fn init(&mut self, other: Ident) {
         self.other = Some(other);
         
-        if self.num == 0 {
-            self.queue.send(EngineMessage::Init{id : self.id, other : other});
-            self.queue.send(EngineMessage::Message{id : other, idx : 1, num : self.num});
+        if self.num == 1 {
+            self.queue.send(EngineMessage::Message{id : other, idx : 2, num : self.num});
         }
     }
 }
@@ -109,32 +108,26 @@ pub(crate) fn fib(n: usize) {
     assert_ne!(fib1_id, fib2_id);
 
     // Initialize modules here.
-    // TODO
-    //unimplemented!();
+    tx.send(EngineMessage::Init{id: fib1_id, other: fib2_id});
+    tx.send(EngineMessage::Init{id: fib2_id, other: fib1_id});
 
     // Start the executor.
     let executor = thread::spawn(move || {
         let mut map = HashMap::new();
-        let f1 : Option<FibonacciModule> = None;
-        let f2 : Option<FibonacciModule> = None;
-        let state = 0;
         while let Ok(msg) = rx.recv() {
             match msg {
                 EngineMessage::RegisterModule(mut fib) => {
-                        fib.init(if fib.id == fib1_id { fib2_id.clone() } else { fib1_id.clone() });
                         map.insert(fib.id, fib);
                     },
                 EngineMessage::Init{id, other} => {
-                    // TODO
-                    //
-                    // what should I do here?
-                    //
-                    // TODO
+                    if let Some(m) = map.get_mut(&id) {
+                        m.init(other);
+                    }
                 },
                 EngineMessage::Message{id, idx, num} => {
-                    let mut fib = map.remove(&id).unwrap();
-                    fib.message(idx, num);
-                    map.insert(fib.id, fib);
+                    if let Some(m) = map.get_mut(&id) {
+                        m.message(idx, num);
+                    }
                 },
                 EngineMessage::Done => {
                     return;
