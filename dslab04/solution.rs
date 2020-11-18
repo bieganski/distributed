@@ -64,11 +64,14 @@ impl<L: Read + Write> SecureServer<L> {
 
     /// Returns next unencrypted message with HMAC tag at the end
     pub fn recv_message(&mut self) -> Result<Vec<u8>, SecureServerError> {
-        let mut data : Vec<u8> = vec![0; 999];
+        let mut data  = [0_u8; 5];
         println!("trying to read data...");
-        self.conn.read_to_end(&mut data).unwrap();
+        // self.conn.read_to_end(&mut data).unwrap(); // TODO inne ready
+        self.conn.read_exact(&mut data).unwrap(); // TODO inne ready
+        // self.conn.rea
         print!("data read: {}", std::str::from_utf8(data.as_ref()).unwrap());
-        Ok(data)
+        // Ok(vec!(data))
+        Err(SecureServerError::InvalidHmac)
     }
 }
 
