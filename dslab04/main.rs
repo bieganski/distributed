@@ -148,9 +148,10 @@ impl MacKeyProvider for MacKeyProviderType {
 fn setup_process(
     mac_key_provider: &dyn MacKeyProvider,
 ) -> (SecureClient<TcpStream>, SecureServer<TcpStream>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:2222").unwrap();
 
     println!("Server listening on: {}", listener.local_addr().unwrap());
+    println!("port: {}", listener.local_addr().unwrap().port());
     let client = SecureClient::new(
         TcpStream::connect(("127.0.0.1", listener.local_addr().unwrap().port())).unwrap(),
         mac_key_provider,
@@ -200,6 +201,7 @@ fn send_example() {
 
     let (mut target_client, mut target_server) = setup_process(&mac_key_provider);
 
+    println!("setup_process done");
     let target_thread = std::thread::spawn(move || {
         let received = target_server.recv_message().unwrap();
         println!(
@@ -213,6 +215,6 @@ fn send_example() {
 }
 
 fn main() {
-    invalid_hmac_example();
+    // invalid_hmac_example();
     send_example();
 }

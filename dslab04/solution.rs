@@ -7,17 +7,15 @@ use std::sync::Arc;
 // Your final solution should not need it.
 
 pub struct SecureClient<L: Read + Write> {
-    // config: rustls::ClientConfig,
     conn: rustls::StreamOwned<rustls::ClientSession, L>,
-    // mac_provider: & dyn MacKeyProvider,
+    key : Vec<u8>,
 }
 
 pub struct SecureServer<L: Read + Write> {
-    // phantom: PhantomData<L>,
     conn: rustls::StreamOwned<rustls::ServerSession, L>,
+    key : Vec<u8>,
 }
 
-use crate::keys::{ROOT_CERT, SERVER_FULL_CHAIN, SERVER_PRIVATE_KEY};
 impl<L: Read + Write> SecureClient<L> {
     pub fn new(link: L, hmac_key_provider: &dyn MacKeyProvider, root_cert: &str) -> Self {
 
@@ -28,25 +26,27 @@ impl<L: Read + Write> SecureClient<L> {
             .unwrap();
         let dns_name = webpki::DNSNameRef::try_from_ascii_str("localhost").unwrap();
         let sess = rustls::ClientSession::new(&Arc::new(config), dns_name);
-        let conn = rustls::StreamOwned::new(sess, link);
+        let key = (*hmac_key_provider.key()).to_vec();
 
-        let res = SecureClient{conn: conn}; // mac_provider: hmac_key_provider
+        let res = SecureClient{conn: rustls::StreamOwned::new(sess, link), key : key}; // mac_provider: hmac_key_provider
         res
     }
 
-    pub fn send_msg(&mut self, _data: Vec<u8>) {
-        unimplemented!()
+    pub fn send_msg(&mut self, data: Vec<u8>) {
+        println!("trying to send: {:?}", data);
+        self.conn.write(data.as_slice()).unwrap();
+        // self.conn.write_all(data.as_slice()).unwrap(); // TODO error handling
+        print!("data written: {}", std::str::from_utf8(data.as_ref()).unwrap());
     }
 }
 
 impl<L: Read + Write> SecureServer<L> {
     pub fn new(
         link: L,
-        _hmac_key_provider: &dyn MacKeyProvider,
+        hmac_key_provider: &dyn MacKeyProvider,
         server_private_key: &str,
         server_full_chain: &str,
     ) -> Self {
-        // TODO NoClientAuth
         let mut config = rustls::ServerConfig::new(NoClientAuth::new());
         let certs = rustls::internal::pemfile::certs(&mut server_full_chain.as_bytes()).unwrap();
         let private_key = rustls::internal::pemfile::rsa_private_keys(
@@ -54,15 +54,21 @@ impl<L: Read + Write> SecureServer<L> {
         ).unwrap().remove(0);
 
         config.set_single_cert(certs, private_key).unwrap();
-        let conn = rustls::ServerSession::new(&Arc::new(config));
+        let sess = rustls::ServerSession::new(&Arc::new(config));
 
-        let res = SecureServer{conn: rustls::StreamOwned::new(conn, link)};
+        let key = (*hmac_key_provider.key()).to_vec();
+
+        let res = SecureServer{conn: rustls::StreamOwned::new(sess, link), key : key};
         res
     }
 
     /// Returns next unencrypted message with HMAC tag at the end
     pub fn recv_message(&mut self) -> Result<Vec<u8>, SecureServerError> {
-        unimplemented!()
+        let mut data : Vec<u8> = vec![0; 999];
+        println!("trying to read data...");
+        self.conn.read_to_end(&mut data).unwrap();
+        print!("data read: {}", std::str::from_utf8(data.as_ref()).unwrap());
+        Ok(data)
     }
 }
 
