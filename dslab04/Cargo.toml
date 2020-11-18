@@ -1,0 +1,27 @@
+[package]
+name = "lab-04"
+version = "0.1.0"
+authors = ["Filip Plata <fp371335@students.mimuw.edu.pl>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+hmac = "0.10.1"
+sha2 = "0.9.2"
+crossbeam-channel = "0.4"
+rustls = { version = "0.17" }
+webpki = "0.21"
+
+[dev-dependencies]
+ntest = "0.7"
+kolmogorov_smirnov = "1.1"
+rustls = { version = "0.17", features = ["dangerous_configuration"] }
+aes-soft = { version = "0.3" }
+block-modes = "0.3"
+rand = "0.7"
+rsa = { version = "0.2" }
+
+[[bin]]
+name = "lab04"
+path = "main.rs"
