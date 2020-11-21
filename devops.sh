@@ -23,16 +23,22 @@ function unpack {
 		log "Error: $file not found!"
 		exit 1
 	fi
-	tar -xvf $file -C ~/distributed/omg
-	cd ~/distributed/omg/$base
+	tar -xvf $file -C ~/distributed/
+	cd ~/distributed/$base
 	cargo build
 	git add .
 	git commit -m "solution template $base added"
-	# git push
+	git push
 }
 
 function dispatch {
-	echo lolo
+	base=dslab0$NUM
+	cd ~/distributed/$base/
+	mkdir mb385162
+	cp solution.rs mb385162
+	zip -r mb385162.zip mb385162/
+	rm -rf mb385162
+	mv mb385162.zip ~/distributed
 }
 
 if [[ "$1" == "" ]]; then
