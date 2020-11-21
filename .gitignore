@@ -13,3 +13,6 @@ Cargo.lock
 
 */target/*
 *.swp
+*/debug/*
+*/*/debug/*
+*/*/target/*
