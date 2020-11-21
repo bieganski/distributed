@@ -24,13 +24,13 @@ pub(crate) mod tests {
 
         run_communication(
             tx,
-            Box::new(move |mut client| {
+            Box::new(move |client| {
                 // when
                 for msg in msgs_clone {
                     client.send_msg(msg.as_bytes().to_vec());
                 }
             }),
-            &mut |mut server| {
+            &mut |server| {
                 // then
                 for msg in &msgs {
                     assert_eq!(msg.as_bytes(), server.recv_message().unwrap().deref())
@@ -69,21 +69,20 @@ pub(crate) mod tests {
     /// TCP connection - before the other one
     pub(crate) fn run_communication(
         tx: Sender<u8>,
-        client_code: Box<dyn FnOnce(SecureClient<RawDataObserver>) + Send>,
-        server_code: &mut dyn FnMut(SecureServer<TcpStream>),
+        client_code: Box<dyn FnOnce(&mut SecureClient<RawDataObserver>) + Send>,
+        server_code: &mut dyn FnMut(&mut SecureServer<TcpStream>),
     ) {
-        let (client, server) = setup_tcp_based_secure_communication(tx);
+        let (mut client, mut server) = setup_tcp_based_secure_communication(tx);
 
         let barrier = Arc::new(Barrier::new(2));
         let barrier_c = barrier.clone();
 
         let client = std::thread::spawn(move || {
-            client_code(client);
-
+            client_code(&mut client);
             barrier_c.wait();
         });
 
-        server_code(server);
+        server_code(&mut server);
 
         barrier.wait();
         assert!(matches!(client.join(), Ok(())));
