@@ -41,8 +41,7 @@ impl<L: Read + Write> SecureClient<L> {
         mac.update(msg.as_slice());
         let tag = mac.finalize().into_bytes();
         msg.extend(&tag);
-
-        self.conn.write(msg.as_slice()).unwrap();
+        self.conn.write_all(msg.as_slice()).unwrap();
     }
 }
 
@@ -70,23 +69,32 @@ impl<L: Read + Write> SecureServer<L> {
 
     /// Returns next unencrypted message with HMAC tag at the end
     pub fn recv_message(&mut self) -> Result<Vec<u8>, SecureServerError> {
-        let mut data = [0_u8; 100];
-        let total_len : u32 = self.conn.read(&mut data).unwrap() as u32;
-        let msg_size = u32::from_be_bytes((&data[0..4]).try_into().expect("no way"));
-        assert_eq!(msg_size, total_len - 4 - 32);
+        const MSG_SIZE_MAX : usize = 1000;
+        let mut msg_content_buf = [0_u8; MSG_SIZE_MAX];
+        // let total_len : u32 = self.conn.read(&mut data).unwrap() as u32;
+        let mut msg_size_buf = [0_u8; 4];
+        let mut msg_hmac_buf = [0_u8; 32];
+
+        self.conn.read_exact(&mut msg_size_buf[0..]).unwrap();
+        let msg_size = u32::from_be_bytes((&msg_size_buf[0..]).try_into().expect("no way"));
+
+        self.conn.read_exact(&mut msg_content_buf[0..msg_size as usize]).unwrap();
+        
+        self.conn.read_exact(&mut msg_hmac_buf[0..]).unwrap();
 
         // parse message
         let mut mac = HmacSha256::new_varkey(&self.key).expect("HMAC can take key of any size");
-        mac.update(&data[0..(msg_size as usize)+4]);
+        let mut concat = msg_size_buf.to_vec();
+        concat.extend(&msg_content_buf[0..msg_size as usize]);
+
+        mac.update(&concat[..]);
         let tag = mac.finalize().into_bytes();
 
-        let msg_tag = &data[4 + msg_size as usize..4+32+msg_size as usize];
-
         let tag_vec = tag.to_vec();
-        let msg_tag_vec = msg_tag.to_vec();
-
+        let msg_tag_vec = msg_hmac_buf.to_vec();
+        
         if tag_vec == msg_tag_vec {
-            Ok((data[4..4+msg_size as usize]).to_vec())
+            Ok(msg_content_buf[0..msg_size as usize].to_vec())
         } else {
             Err(SecureServerError::InvalidHmac)
         }
