@@ -1,0 +1,11 @@
+[package]
+name = "lab-06"
+version = "0.1.0"
+authors = ["Filip Plata <fp371335@students.mimuw.edu.pl>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[[bin]]
+name = "ramdisk"
+path = "main.rs"
