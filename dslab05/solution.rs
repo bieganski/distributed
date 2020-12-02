@@ -5,17 +5,13 @@ pub struct List<T> {
 }
 
 pub struct ListValue<T> {
-    data : T,
+    data : Rc<T>,
     next : Option<Rc<ListValue<T>>>,
 }
 
 impl<T> Clone for List<T> {
     
     fn clone(&self) -> Self {
-        // let a = match &self.first {
-        //     None => None,
-        //     Some(rc) => Some(rc.clone()),
-        // };
         let res : List<T> = List{first : self.copy_value()};
 
         return res;
@@ -37,15 +33,13 @@ impl<T> List<T> {
 
     /// Creates a new list with the new value as head and the old list as tail.
     pub fn cons(&self, val: T) -> Self {
-        // let old_copy = self.clone();
-        let new_val = ListValue{data: val, 
+        let new_val = ListValue{data: Rc::new(val), 
                                 next: self.copy_value()};
         List{first: Some(Rc::new(new_val))}
     }
 
     /// Length of the list, 0 for empty list.
     pub fn length(&self) -> usize {
-        // unimplemented!()
         let mut tmp : Option<&Rc<ListValue<T>>> = self.first.as_ref();
         let mut res : usize = 0;
         while let Some(rc) = tmp {
@@ -57,12 +51,13 @@ impl<T> List<T> {
 
     /// Head element if the list is not empty, None if the list is empty.
     pub fn head(&self) -> Option<Rc<T>> {
-        unimplemented!()
-        // match &self.first {
-        //     None => None,
-        //     Some(fst_rc) => Some(Rc::new((*fst_rc).data)),
-        // }
-    }
+        match &self.first {
+            None => None,
+            Some(fst_rc) => {   
+                Some(fst_rc.data.clone())
+            },
+        }
+    }   
 
     /// List without the head element, thus one element shorter. Empty list for empty list.
     pub fn tail(&self) -> Self {
