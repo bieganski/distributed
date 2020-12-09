@@ -11,6 +11,7 @@
 	* AES
 	* MAC
 * **dslab05** - generic list implementation
+* **dslab06** - simple block read/write device Linux kernel driver
 
 ### Build
 
