@@ -69,6 +69,12 @@ static void rdc_xfer_request(struct rdc_dev *dev, struct request *req)
         /* Direction of data transfer, dir == 1 is write, dir == 0 is read from
          * the perspective of the device. */
         int dir = bio_data_dir(iter.bio);
+
+        if (sector >= NR_SECTORS) {
+            printk(KERN_DEBUG "trying to read from too far sector! abandoning request...");
+            return;
+        }
+
         /* Kernel buffer for data - it has to be moved in or out of the device. */
         char *buffer = kmap_atomic(bvec.bv_page);
 
@@ -76,6 +82,14 @@ static void rdc_xfer_request(struct rdc_dev *dev, struct request *req)
          * Atomic means it is fast, and can only be used in context which do not suspend
          * the thread of execution - like waiting for a mutex. Later such memory must be
          * unmapped. */
+        
+        if (dir == 1) {
+            // driver writes
+            copy_to_user(buffer + offset, dev->data + (sector * KERNEL_SECTOR_SIZE), len);
+        } else {
+            // driver reads
+            copy_from_user(buffer + offset, dev->data + (sector * KERNEL_SECTOR_SIZE), len);
+        }
 
         /* TODO: data needs to be actually transferred to/from `buffer` and `dev->data`.
          * All buffers are in kernel space, so special copy_* methods are necessary. */
@@ -117,7 +131,13 @@ static int create_block_device(struct rdc_dev *dev)
     int err;
 
     dev->size = NR_SECTORS * KERNEL_SECTOR_SIZE;
-    /* TODO: dev->data is never allocated... */
+
+    dev->data = vmalloc(NR_SECTORS * KERNEL_SECTOR_SIZE);
+    if (dev->data == NULL) {
+        panic("[blkdev] ERROR: VMALLOC FAILED");
+    } else {
+        printk(KERN_DEBUG "[blkdev] allocating data...");
+    }
 
     /* Initialize the I/O queue. */
     spin_lock_init(&dev->lock);
@@ -188,6 +208,9 @@ static void delete_rdc(struct rdc_dev *dev)
     if (dev->queue)
         blk_cleanup_queue(dev->queue);
     /* TODO cleanup allocated data */
+
+    printk(KERN_DEBUG "[blkdev] cleaning allocated data...");
+    vfree(dev->data);
 }
 
 static void __exit rdc_exit(void)
