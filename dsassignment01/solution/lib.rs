@@ -66,10 +66,6 @@ pub mod stable_storage_public {
     }
 }
 
-use std::vec::Vec;
-use crossbeam_channel::{unbounded, Receiver, Sender};
-use std::thread;
-
 pub mod executors_public {
     use crate::executors_public::WorkerMsg::{ExecuteModule, NewModule, RemoveModule};
     use std::sync::Arc;
