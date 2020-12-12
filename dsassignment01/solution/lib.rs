@@ -66,9 +66,24 @@ pub mod stable_storage_public {
     }
 }
 
+use std::vec::Vec;
+use crossbeam_channel::{unbounded, Receiver, Sender};
+use std::thread;
+
 pub mod executors_public {
+    use crate::executors_public::WorkerMsg::{ExecuteModule, NewModule, RemoveModule};
+    use std::sync::Arc;
     use std::fmt;
     use std::time::Duration;
+    use crossbeam_channel::{unbounded, Receiver, Sender};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+
+    type MessageLambda<T> = Box<dyn FnOnce (&mut T) + Send>;
+    type ModId = u32;
+
+    // use crate system_setup_public::ReliableBroadcastModule;
 
     pub trait Message: fmt::Debug + Clone + Send + 'static {}
     impl<T: fmt::Debug + Clone + Send + 'static> Message for T {}
@@ -80,36 +95,99 @@ pub mod executors_public {
         fn handle(&mut self, msg: M);
     }
 
+    pub enum WorkerMsg {
+        NewModule(ModId),
+        RemoveModule(ModId),
+        ExecuteModule(ModId),
+    }
+
     #[derive(Debug, Clone)]
     pub struct Tick {}
 
-    pub struct System {}
+    pub struct System {
+        executor : std::thread::JoinHandle<()>,
+        meta_tx : Sender<WorkerMsg>,
+        next_mod_id : ModId,
+        workers : Arc<Mutex<HashMap<ModId, Box<dyn WorkerType + Send>>>>,
+    }
 
     impl System {
         pub fn request_tick<T: Handler<Tick>>(&mut self, _requester: &ModuleRef<T>, _delay: Duration) {
             unimplemented!()
         }
 
-        pub fn register_module<T: Send + 'static>(&mut self, _module: T) -> ModuleRef<T> {
-            unimplemented!()
+        pub fn register_module<T: Send + 'static>(&mut self, module: T) -> ModuleRef<T> {
+            let id = self.next_mod_id;
+            self.next_mod_id += 1;
+            let (tx, rx) : (Sender<MessageLambda<T>>, Receiver<MessageLambda<T>>) = unbounded();
+            let meta = self.meta_tx.clone();
+            let worker_buffer = tx;
+            self.workers.lock().unwrap().insert(id, Box::new(Worker{receiver: rx, module}));
+            ModuleRef{meta, worker_buffer, id}
         }
+        
 
         pub fn new() -> Self {
-            unimplemented!()
+            let (meta_tx, meta_rx) = unbounded();
+            let workers_raw : HashMap<ModId, Box<dyn WorkerType + Send>> = HashMap::new();
+            let workers = Arc::new(Mutex::new(workers_raw));
+            let workers_cloned = workers.clone();
+            
+            let executor = std::thread::spawn(move || {
+                loop {
+                    match meta_rx.recv().unwrap() {
+                        NewModule(_) => {
+                            unimplemented!()
+                        },
+                        RemoveModule(id) => {
+                            workers_cloned.lock().unwrap().remove(&id).unwrap();
+                        },
+                        ExecuteModule(id) => {
+                            let mut map = workers_cloned.lock().unwrap();
+                            let mut w = map.get_mut(&id).unwrap();
+                            let worker : &mut Box<dyn WorkerType + Send> = &mut w;
+                            worker.execute();
+                        },
+                    }
+                }
+            });
+            let next_mod_id = 0;
+            System{next_mod_id, workers, meta_tx, executor}
         }
     }
 
     pub struct ModuleRef<T: 'static> {
-        // dummy marker to satisfy compiler
-        pub(crate) mod_internal: std::marker::PhantomData<T>,
+        meta: Sender<WorkerMsg>, // informs executor about pending messages
+        worker_buffer: Sender<MessageLambda<T>>,
+        id: u32,
+    }
+
+    pub struct Worker<T: 'static> {
+        receiver: Receiver<MessageLambda<T>>,
+        module: T,
+    }
+
+    pub trait WorkerType {
+        fn execute(&mut self);
+    }
+
+    impl<T> WorkerType for Worker<T> {
+        fn execute(&mut self) {
+            let f = self.receiver.recv().unwrap();
+            f(&mut self.module);
+        }
     }
 
     impl<T> ModuleRef<T> {
-        pub fn send<M: Message>(&self, _msg: M)
+        pub fn send<M: Message>(&self, msg: M)
         where
             T: Handler<M>,
         {
-            unimplemented!()
+            let message = move |module: &mut T| {
+                module.handle(msg);
+            };
+            self.worker_buffer.send(Box::new(message)).unwrap();
+            self.meta.send(ExecuteModule{0: self.id}).unwrap();
         }
     }
 
@@ -121,7 +199,11 @@ pub mod executors_public {
 
     impl<T> Clone for ModuleRef<T> {
         fn clone(&self) -> Self {
-            unimplemented!()
+            ModuleRef{
+                id: self.id,
+                meta: self.meta.clone(),
+                worker_buffer: self.worker_buffer.clone()
+            }
         }
     }
 }

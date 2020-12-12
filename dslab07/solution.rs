@@ -16,7 +16,10 @@ type SinkItem = (Bytes, SocketAddr);
 type UdpSink = SplitSink<UdpFramed<BytesCodec>, SinkItem>;
 
 // TODO add whatever fields necessary.
-pub struct FailureDetectorActor {}
+pub struct FailureDetectorActor {
+    sink: SinkWrite<SinkItem, UdpSink>,
+    addresses: HashMap<Uuid, SocketAddr>,
+}
 
 impl Actor for FailureDetectorActor {
     type Context = Context<Self>;
@@ -26,6 +29,13 @@ impl Actor for FailureDetectorActor {
 impl StreamHandler<DetectorOperationUdp> for FailureDetectorActor {
     fn handle(&mut self, item: DetectorOperationUdp, _ctx: &mut Self::Context) {
         let detector_operation = item.0;
+
+        // let _ = match detector_operation {
+        //     DetectorOperation::HeartbeatRequest(uuid) => None,
+        //     DetectorOperation::HeartbeatResponse(uuid) => None,
+        //     DetectorOperation::UpRequest => None,
+        //     DetectorOperation::UpInfo(vec) => None,
+        // };
 
         panic!("message type not supported");
     }
@@ -69,13 +79,24 @@ impl FailureDetectorActor {
             let sink = SinkWrite::new(sink, ctx);
 
             // TODO finish FailureDetectorActor type and its construction here.
-            unimplemented!()
+            // loop {
+            //    ; 
+            // }
+            FailureDetectorActor {
+                sink: sink,
+                addresses: addresses.clone()
+            }
+            // unimplemented!()
         })
     }
 
     /// Called periodically to check send broadcast and update alive processes.
     fn tick(&mut self) {
         // TODO finish tick - it is registered in `new`.
+        for val in self.addresses.values() {
+            val.send();
+        }
+        
         unimplemented!()
     }
 }

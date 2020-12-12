@@ -85,10 +85,12 @@ static void rdc_xfer_request(struct rdc_dev *dev, struct request *req)
         
         if (dir == 1) {
             // driver writes
-            copy_to_user(buffer + offset, dev->data + (sector * KERNEL_SECTOR_SIZE), len);
+            printk(KERN_DEBUG "blkdev: writing %d", len);
+            memcpy(buffer + offset, dev->data + (sector * KERNEL_SECTOR_SIZE), len);
         } else {
             // driver reads
-            copy_from_user(buffer + offset, dev->data + (sector * KERNEL_SECTOR_SIZE), len);
+            printk(KERN_DEBUG "blkdev: reading %d", len);
+            memcpy(dev->data + (sector * KERNEL_SECTOR_SIZE), buffer + offset, len);
         }
 
         /* TODO: data needs to be actually transferred to/from `buffer` and `dev->data`.
