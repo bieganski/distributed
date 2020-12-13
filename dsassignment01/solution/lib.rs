@@ -7,7 +7,10 @@ pub use crate::system_setup_public::*;
 pub use domain::*;
 
 pub mod broadcast_public {
-    use crate::executors_public::ModuleRef;
+    use crate::domain::PlainSenderMessage::Acknowledge;
+use crate::domain::PlainSenderMessage::Broadcast;
+use std::collections::HashMap;
+use crate::executors_public::ModuleRef;
     use crate::{PlainSenderMessage, StableStorage, StubbornBroadcastModule, SystemAcknowledgmentMessage, SystemBroadcastMessage, SystemMessageContent, SystemMessageHeader, SystemMessage};
     use std::collections::HashSet;
     use uuid::Uuid;
@@ -47,21 +50,43 @@ pub mod broadcast_public {
     pub struct BasicStubbornBroadcast {
         link: Box<dyn PlainSender>,
         processes: HashSet<Uuid>,
+        ack: HashMap<SystemMessageHeader, HashSet<Uuid>>,
+        contents: HashMap<SystemMessageHeader, SystemBroadcastMessage>,
     }
+    
+    use std::iter::FromIterator;
 
     impl StubbornBroadcast for BasicStubbornBroadcast {
     
-        fn broadcast(&mut self, _: SystemBroadcastMessage) {
-            todo!()
+        fn broadcast(&mut self, b_msg: SystemBroadcastMessage) {
+            self.ack.insert(b_msg.message.header, HashSet::from_iter(self.processes.clone()));
+            
+            for id in self.processes.iter() {
+                self.link.send_to(id, Broadcast(b_msg.clone()));
+            }
+            
+            self.contents.insert(b_msg.message.header, b_msg);
         }
-        fn receive_acknowledgment(&mut self, _: Uuid, _: SystemMessageHeader) {
-            todo!()
+
+        fn receive_acknowledgment(&mut self, id: Uuid, hdr_msg: SystemMessageHeader) {
+            let msg_acks = self.ack.get_mut(&hdr_msg).unwrap(); 
+            msg_acks.remove(&id);
+            if msg_acks.is_empty() {
+                self.contents.remove(&hdr_msg).unwrap();
+                self.ack.remove(&hdr_msg);
+            }
         }
-        fn send_acknowledgment(&mut self, _: Uuid, _: SystemAcknowledgmentMessage) {
-            todo!()
+
+        fn send_acknowledgment(&mut self, id: Uuid, ack_msg: SystemAcknowledgmentMessage) {
+            self.link.send_to(&id, Acknowledge(ack_msg))
         }
+
         fn tick(&mut self) {
-            todo!()
+            for (hdr_msg, procs) in self.ack.iter() {
+                for id in procs.iter() {
+                    self.link.send_to(id, Broadcast(self.contents.get(&hdr_msg).unwrap().clone()));
+                }
+            }
         }
     }
 
@@ -69,7 +94,7 @@ pub mod broadcast_public {
         link: Box<dyn PlainSender>,
         processes: HashSet<Uuid>,
     ) -> Box<dyn StubbornBroadcast> {
-        Box::new(BasicStubbornBroadcast{link, processes})
+        Box::new(BasicStubbornBroadcast{link, processes, ack: HashMap::new(), contents: HashMap::new()})
     }
 }
 
