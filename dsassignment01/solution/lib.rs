@@ -8,10 +8,11 @@ pub use domain::*;
 
 pub mod broadcast_public {
     use crate::domain::PlainSenderMessage::Acknowledge;
-use crate::domain::PlainSenderMessage::Broadcast;
-use std::collections::HashMap;
-use crate::executors_public::ModuleRef;
+    use crate::domain::PlainSenderMessage::Broadcast;
+    use crate::executors_public::ModuleRef;
     use crate::{PlainSenderMessage, StableStorage, StubbornBroadcastModule, SystemAcknowledgmentMessage, SystemBroadcastMessage, SystemMessageContent, SystemMessageHeader, SystemMessage};
+    
+    use std::collections::HashMap;
     use std::collections::HashSet;
     use uuid::Uuid;
 
@@ -32,7 +33,7 @@ use crate::executors_public::ModuleRef;
     // fn get(&self, key: &str) -> Option<Vec<u8>>;
 
     #[allow(dead_code)]
-    struct BasicReliableBroadcast {
+    pub struct BasicReliableBroadcast {
         sbeb: ModuleRef<StubbornBroadcastModule>,
         storage: Box<dyn StableStorage>,
         id: Uuid,
@@ -74,14 +75,13 @@ use crate::executors_public::ModuleRef;
             unimplemented!()
         }
     }
-    
+
     impl ReliableBroadcast for BasicReliableBroadcast {
         
         fn broadcast(&mut self, content_msg: SystemMessageContent) {
             todo!()
             
         }
-
 
         fn deliver_message(&mut self, _: SystemBroadcastMessage) { todo!() }
         fn receive_acknowledgment(&mut self, _: SystemAcknowledgmentMessage) { todo!() }
@@ -402,13 +402,31 @@ pub mod executors_public {
 }
 
 pub mod system_setup_public {
-    use crate::{Configuration, ModuleRef, ReliableBroadcast, StubbornBroadcast, System};
+use crate::broadcast_public::build_reliable_broadcast;
+use std::path::PathBuf;
+use crate::stable_storage_public::build_stable_storage;
+use crate::broadcast_public::build_stubborn_broadcast;
+use crate::{Configuration, ModuleRef, ReliableBroadcast, StubbornBroadcast, System};
 
     pub fn setup_system(
-        _system: &mut System,
-        _config: Configuration,
+        system: &mut System,
+        config: Configuration,
     ) -> ModuleRef<ReliableBroadcastModule> {
-        unimplemented!()
+
+        let sbeb = build_stubborn_broadcast(config.sender, config.processes.clone());
+        let sbeb = StubbornBroadcastModule{stubborn_broadcast: sbeb};
+        let sbeb = system.register_module(sbeb);
+
+        let lurb = build_reliable_broadcast(
+            sbeb, 
+            config.stable_storage,
+            config.self_process_identifier, 
+            config.processes.len(), 
+            config.delivered_callback,
+        );
+    
+        let lurb_mod = ReliableBroadcastModule{reliable_broadcast: lurb};
+        system.register_module(lurb_mod)
     }
 
     pub struct ReliableBroadcastModule {
