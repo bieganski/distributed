@@ -27,14 +27,76 @@ use crate::executors_public::ModuleRef;
         fn receive_acknowledgment(&mut self, msg: SystemAcknowledgmentMessage);
     }
 
+    // fn put(&mut self, key: &str, value: &[u8]) -> Result<(), String>;
+
+    // fn get(&self, key: &str) -> Option<Vec<u8>>;
+
+    #[allow(dead_code)]
+    struct BasicReliableBroadcast {
+        sbeb: ModuleRef<StubbornBroadcastModule>,
+        storage: Box<dyn StableStorage>,
+        id: Uuid,
+        processes_number: usize,
+        delivered_callback: Box<dyn Fn(SystemMessage) + Send>,
+
+        pending: HashMap<SystemMessageHeader, SystemMessageContent>,
+        delivered: HashSet<SystemMessageHeader>,
+    }
+
+    #[allow(dead_code)]
+    #[allow(unused)]
+    impl BasicReliableBroadcast {
+        fn store_pending(&mut self, hdr_msg: &SystemMessageHeader, content_msg: &SystemMessageContent) {
+            let key = BasicReliableBroadcast::hdr_to_key(hdr_msg);
+            let key = std::str::from_utf8(key.as_slice()).unwrap(); // TODO FOW NOW ONLY SPECIFIC THINGS hashing etc.
+            let value = &content_msg.msg;
+            let res = self.storage.put(key, value.as_slice());
+            match res {
+                Ok(_) => (),
+                Err(s) => println!("store_pending: {}", s),
+            }
+        }
+
+        fn store_delivered(hdr_msg: &SystemMessageHeader) {
+            unimplemented!()
+        }
+
+        fn hdr_to_key(hdr_msg: &SystemMessageHeader) -> Vec<u8> {
+            let m : [u8; 16] = hdr_msg.message_id.as_bytes().clone();
+            let p : [u8; 16] = hdr_msg.message_source_id.as_bytes().clone();
+            [m, p].concat()
+        }
+
+        fn key_to_hdr(v: &Vec<u8>) -> SystemMessageHeader {
+            // let m : &str = "a";
+            // let p : &str = "a";
+            // SystemMessageHeader{message_id: Uuid::from_bytes(m).unwrap(), message_source_id: Uuid::from_str(p).unwrap()}
+            unimplemented!()
+        }
+    }
+    
+    impl ReliableBroadcast for BasicReliableBroadcast {
+        
+        fn broadcast(&mut self, content_msg: SystemMessageContent) {
+            todo!()
+            
+        }
+
+
+        fn deliver_message(&mut self, _: SystemBroadcastMessage) { todo!() }
+        fn receive_acknowledgment(&mut self, _: SystemAcknowledgmentMessage) { todo!() }
+    }
+
     pub fn build_reliable_broadcast(
-        _sbeb: ModuleRef<StubbornBroadcastModule>,
-        _storage: Box<dyn StableStorage>,
-        _id: Uuid,
-        _processes_number: usize,
-        _delivered_callback: Box<dyn Fn(SystemMessage) + Send>,
+        sbeb: ModuleRef<StubbornBroadcastModule>,
+        storage: Box<dyn StableStorage>,
+        id: Uuid,
+        processes_number: usize,
+        delivered_callback: Box<dyn Fn(SystemMessage) + Send>,
     ) -> Box<dyn ReliableBroadcast> {
-        unimplemented!()
+
+        Box::new(BasicReliableBroadcast{sbeb, storage, id, processes_number, 
+            delivered_callback, delivered: HashSet::new(), pending: HashMap::new()})
     }
 
     pub trait StubbornBroadcast: Send {
@@ -47,7 +109,7 @@ use crate::executors_public::ModuleRef;
         fn tick(&mut self);
     }
 
-    pub struct BasicStubbornBroadcast {
+    struct BasicStubbornBroadcast {
         link: Box<dyn PlainSender>,
         processes: HashSet<Uuid>,
         ack: HashMap<SystemMessageHeader, HashSet<Uuid>>,
@@ -64,7 +126,7 @@ use crate::executors_public::ModuleRef;
             for id in self.processes.iter() {
                 self.link.send_to(id, Broadcast(b_msg.clone()));
             }
-            
+
             self.contents.insert(b_msg.message.header, b_msg);
         }
 
@@ -145,7 +207,7 @@ impl StableStorage for RamStorage {
 
 pub mod executors_public {
     use crate::executors_public::TickerMsg::RequestTick;
-use crate::executors_public::WorkerMsg::{ExecuteModule, NewModule, RemoveModule};
+    use crate::executors_public::WorkerMsg::{ExecuteModule, NewModule, RemoveModule};
     use std::sync::Arc;
     use std::fmt;
     use std::time::Duration;
