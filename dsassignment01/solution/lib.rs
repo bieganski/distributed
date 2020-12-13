@@ -149,7 +149,7 @@ use crate::executors_public::WorkerMsg::{ExecuteModule, NewModule, RemoveModule}
     }
 
     pub enum TickerMsg {
-        RequestTick(ModId, Duration, Box<dyn FnOnce() + Send + Sync>)
+        RequestTick(ModId, Duration, Box<dyn Fn() + Send + Sync>)
     }
 
     #[derive(Debug, Clone)]
@@ -162,7 +162,6 @@ use crate::executors_public::WorkerMsg::{ExecuteModule, NewModule, RemoveModule}
         ticker_meta_tx : Sender<TickerMsg>,
         next_mod_id : ModId,
         workers : Arc<Mutex<HashMap<ModId, Box<dyn WorkerType + Send>>>>,
-        ticked_modules : Arc<HashMap<usize, (ModId, Receiver<std::time::Instant>, Box<dyn FnOnce() + Send + Sync>)>>,
     }
 
     impl System {
@@ -173,12 +172,12 @@ use crate::executors_public::WorkerMsg::{ExecuteModule, NewModule, RemoveModule}
             let requester_cloned = requester.clone();
 
             self.ticker_meta_tx.send(RequestTick{
-                0: requester.id, 
+                0: requester_cloned.id,
                 1: delay, 
                 2: Box::new(move || {
                         requester_cloned.send(Tick{});
                     })
-            });
+            }).unwrap();
         }
 
         pub fn register_module<T: Send + 'static>(&mut self, module: T) -> ModuleRef<T> {
@@ -196,13 +195,8 @@ use crate::executors_public::WorkerMsg::{ExecuteModule, NewModule, RemoveModule}
             let workers = Arc::new(Mutex::new(workers_raw));
             
             let workers_cloned_executor = workers.clone();
-            let workers_cloned_ticker = workers.clone();
-            
-            let ticked_modules = Arc::new(HashMap::new());
-            let mut ticked_modules_cloned = ticked_modules.clone();
             
             let (executor_meta_tx, executor_meta_rx) = unbounded();
-            let executor_meta_tx_cloned = executor_meta_tx.clone();
 
             let executor = std::thread::spawn(move || {
                 loop {
@@ -224,13 +218,21 @@ use crate::executors_public::WorkerMsg::{ExecuteModule, NewModule, RemoveModule}
                 }
             });
 
+            // tx is used in request_tick function, rx is owned by ticker thread
             let (ticker_meta_tx, ticker_meta_rx) = unbounded();
             let ticker = std::thread::spawn(move || {
+                let mut ticker_rxs_funs : HashMap<ModId, (Receiver<_>, Box<dyn Fn() + Send + Sync>)> = HashMap::new();
+                let mut mods : HashMap<usize, ModId> = HashMap::new();
+
                 loop {
                     let mut sel = Select::new();
                     let oper_meta_num = sel.recv(&ticker_meta_rx);
-                    for (_, (_, tick_rx, _)) in ticked_modules_cloned.iter() {
-                        sel.recv(&tick_rx);
+                    {
+                    for (mod_id, (tick_rx, _)) in ticker_rxs_funs.iter() {
+                        
+                        let oper_id : usize = sel.recv(&tick_rx);
+                        mods.insert(oper_id, mod_id.clone());
+                    }
                     }
                     let oper = sel.select();
                     let idx = oper.index();
@@ -239,15 +241,15 @@ use crate::executors_public::WorkerMsg::{ExecuteModule, NewModule, RemoveModule}
                             match oper.recv(&ticker_meta_rx).unwrap() {
                                 RequestTick(id, dur, lambda) => {
                                     let ticker = tick(dur);
-                                    let oper_mod_num = sel.recv(&ticker);
-                                    ticked_modules_cloned.insert(oper_mod_num, (id, ticker, lambda));
+                                    ticker_rxs_funs.insert(id, (ticker, lambda));
                                 }
                             }
                         },
                         i => {
-                            let (mod_id, ticker, lambda) = ticked_modules_cloned.get(&i).unwrap();
+                            let mod_id = mods.get(&i).unwrap().clone();
+                            let (ticker, lambda) = ticker_rxs_funs.get(&mod_id).unwrap();
                             oper.recv(&ticker).unwrap();
-                            (*lambda)(); // that simply sends Tick to ModuleRef and runs all the machinery
+                            lambda(); // that simply sends Tick to ModuleRef and runs all the machinery
                         }
                     }
                 }
@@ -256,7 +258,7 @@ use crate::executors_public::WorkerMsg::{ExecuteModule, NewModule, RemoveModule}
             let next_mod_id = 0;
 
             System{next_mod_id, workers, ticker, 
-                ticker_meta_tx, executor, executor_meta_tx, ticked_modules}
+                ticker_meta_tx, executor, executor_meta_tx}
         }
     }
 
