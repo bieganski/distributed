@@ -32,7 +32,6 @@ pub mod broadcast_public {
 
     // fn get(&self, key: &str) -> Option<Vec<u8>>;
 
-    #[allow(dead_code)]
     pub struct BasicReliableBroadcast {
         sbeb: ModuleRef<StubbornBroadcastModule>,
         storage: Box<dyn StableStorage>,
@@ -42,6 +41,7 @@ pub mod broadcast_public {
 
         pending: HashMap<SystemMessageHeader, SystemMessageContent>,
         delivered: HashSet<SystemMessageHeader>,
+        ack: HashMap<SystemMessageHeader, HashSet<Uuid>>,
     }
 
     #[allow(dead_code)]
@@ -79,11 +79,35 @@ pub mod broadcast_public {
     impl ReliableBroadcast for BasicReliableBroadcast {
         
         fn broadcast(&mut self, content_msg: SystemMessageContent) {
-            todo!()
-            
+            let header = SystemMessageHeader{message_id: self.id, message_source_id: Uuid::new_v4()};
+            println!("[broadcast]: proc {:?} generated message with id {}", self.id, &header.message_source_id.to_string()[0..5]);
+            self.pending.insert(header.clone(), content_msg.clone());
+            // TODO store pending
+            let message = SystemMessage{header, data: SystemMessageContent{msg: content_msg.msg}};
+            self.sbeb.send(SystemBroadcastMessage{forwarder_id: self.id, message});
         }
 
-        fn deliver_message(&mut self, _: SystemBroadcastMessage) { todo!() }
+        fn deliver_message(&mut self, msg: SystemBroadcastMessage) {
+            if !self.pending.contains_key(&msg.message.header) {
+                self.pending.insert(msg.message.header.clone(), msg.message.data.clone()); // TODO na pewno clone?
+                // TODO store pending
+                println!("[deliver_message]: sending ack to {:?} from {:?}", msg.forwarder_id, self.id);
+                self.sbeb.send((msg.forwarder_id, SystemAcknowledgmentMessage{proc: msg.forwarder_id, hdr: msg.message.header.clone()}));
+                println!("[deliver_message]: next broadcasting msg from {:?}", msg.forwarder_id);
+                self.sbeb.send(SystemBroadcastMessage{forwarder_id: self.id, message: msg.message.clone()});
+            }
+            if !self.ack.contains_key(&msg.message.header) {
+                self.ack.insert(msg.message.header.clone(), HashSet::new());
+                if (self.ack.len() > self.processes_number / 2) && (!self.delivered.contains(&msg.message.header)) {
+                    (self.delivered_callback)(msg.message.clone()); // TODO at least once semantics
+                    self.delivered.insert(msg.message.header.clone());
+                    // TODO store delivered
+                    println!("[deliver_message]: sending ack to {:?} from {:?}", msg.forwarder_id, self.id);
+                    println!("possible bug - sent twice?");
+                    self.sbeb.send((msg.forwarder_id, SystemAcknowledgmentMessage{proc: msg.forwarder_id, hdr: msg.message.header}));
+                } 
+            }
+        }
         fn receive_acknowledgment(&mut self, _: SystemAcknowledgmentMessage) { todo!() }
     }
 
@@ -96,7 +120,7 @@ pub mod broadcast_public {
     ) -> Box<dyn ReliableBroadcast> {
 
         Box::new(BasicReliableBroadcast{sbeb, storage, id, processes_number, 
-            delivered_callback, delivered: HashSet::new(), pending: HashMap::new()})
+            delivered_callback, delivered: HashSet::new(), pending: HashMap::new(), ack: HashMap::new()})
     }
 
     pub trait StubbornBroadcast: Send {
@@ -315,8 +339,7 @@ pub mod executors_public {
                     let mut sel = Select::new();
                     let oper_meta_num = sel.recv(&ticker_meta_rx);
                     {
-                    for (mod_id, (tick_rx, _)) in ticker_rxs_funs.iter() {
-                        
+                    for (mod_id, (tick_rx, _)) in ticker_rxs_funs.iter() {                        
                         let oper_id : usize = sel.recv(&tick_rx);
                         mods.insert(oper_id, mod_id.clone());
                     }
@@ -403,8 +426,6 @@ pub mod executors_public {
 
 pub mod system_setup_public {
 use crate::broadcast_public::build_reliable_broadcast;
-use std::path::PathBuf;
-use crate::stable_storage_public::build_stable_storage;
 use crate::broadcast_public::build_stubborn_broadcast;
 use crate::{Configuration, ModuleRef, ReliableBroadcast, StubbornBroadcast, System};
 
