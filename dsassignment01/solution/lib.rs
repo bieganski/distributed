@@ -148,6 +148,7 @@ pub mod broadcast_public {
             self.ack.insert(b_msg.message.header, HashSet::from_iter(self.processes.clone()));
             
             for id in self.processes.iter() {
+                println!("[sbeb]: sending to {:?} from forwarder {:?}", id, b_msg.forwarder_id);
                 self.link.send_to(id, Broadcast(b_msg.clone()));
             }
 
@@ -283,7 +284,7 @@ pub mod executors_public {
             let requester_cloned = requester.clone();
 
             self.ticker_meta_tx.send(RequestTick{
-                0: requester_cloned.id,
+                0: requester_cloned.data.id,
                 1: delay, 
                 2: Box::new(move || {
                         requester_cloned.send(Tick{});
@@ -298,7 +299,7 @@ pub mod executors_public {
             let meta = self.executor_meta_tx.clone();
             let worker_buffer = tx;
             self.workers.lock().unwrap().insert(id, Box::new(Worker{receiver: rx, module}));
-            ModuleRef{meta, worker_buffer, id}
+            ModuleRef{data: Arc::new(ModuleRefData{meta, worker_buffer, id})}
         }
         
         pub fn new() -> Self {
@@ -316,7 +317,6 @@ pub mod executors_public {
                             unimplemented!()
                         },
                         RemoveModule(id) => {
-                            // TODO it's never called for now
                             workers_cloned_executor.lock().unwrap().remove(&id).unwrap();
                         },
                         ExecuteModule(id) => {
@@ -350,6 +350,7 @@ pub mod executors_public {
                         i if i == oper_meta_num => {
                             match oper.recv(&ticker_meta_rx).unwrap() {
                                 RequestTick(id, dur, lambda) => {
+                                    println!("[ticker] {:?} want's me to tick each {:?}", id, dur);
                                     let ticker = tick(dur);
                                     ticker_rxs_funs.insert(id, (ticker, lambda));
                                 }
@@ -372,10 +373,21 @@ pub mod executors_public {
         }
     }
 
+    // thanks to usage of Arc, ModuleRefData's drop() will be called exactly once
     pub struct ModuleRef<T: 'static> {
+        data: Arc<ModuleRefData<T>>,
+    }
+
+    struct ModuleRefData<T: 'static> {
         meta: Sender<WorkerMsg>, // informs executor about pending messages
         worker_buffer: Sender<MessageLambda<T>>,
-        id: u32,
+        id: ModId,
+    }
+
+    impl<T> Drop for ModuleRefData<T> {
+        fn drop(&mut self) {
+            self.meta.send(RemoveModule{0: self.id}).unwrap();
+        }
     }
 
     pub struct Worker<T: 'static> {
@@ -402,8 +414,8 @@ pub mod executors_public {
             let message = move |module: &mut T| {
                 module.handle(msg);
             };
-            self.worker_buffer.send(Box::new(message)).unwrap();
-            self.meta.send(ExecuteModule{0: self.id}).unwrap();
+            self.data.worker_buffer.send(Box::new(message)).unwrap();
+            self.data.meta.send(ExecuteModule{0: self.data.id}).unwrap();
         }
     }
 
@@ -416,9 +428,7 @@ pub mod executors_public {
     impl<T> Clone for ModuleRef<T> {
         fn clone(&self) -> Self {
             ModuleRef{
-                id: self.id,
-                meta: self.meta.clone(),
-                worker_buffer: self.worker_buffer.clone()
+                data: self.data.clone(),
             }
         }
     }
@@ -437,6 +447,7 @@ use crate::{Configuration, ModuleRef, ReliableBroadcast, StubbornBroadcast, Syst
         let sbeb = build_stubborn_broadcast(config.sender, config.processes.clone());
         let sbeb = StubbornBroadcastModule{stubborn_broadcast: sbeb};
         let sbeb = system.register_module(sbeb);
+        system.request_tick(&sbeb, config.retransmission_delay);
 
         let lurb = build_reliable_broadcast(
             sbeb, 
