@@ -1,5 +1,6 @@
 mod domain;
 
+use std::path::PathBuf;
 pub use crate::broadcast_public::*;
 pub use crate::executors_public::*;
 pub use crate::stable_storage_public::*;
@@ -28,10 +29,6 @@ pub mod broadcast_public {
         fn receive_acknowledgment(&mut self, msg: SystemAcknowledgmentMessage);
     }
 
-    // fn put(&mut self, key: &str, value: &[u8]) -> Result<(), String>;
-
-    // fn get(&self, key: &str) -> Option<Vec<u8>>;
-
     pub struct BasicReliableBroadcast {
         sbeb: ModuleRef<StubbornBroadcastModule>,
         storage: Box<dyn StableStorage>,
@@ -42,38 +39,6 @@ pub mod broadcast_public {
         pending: HashMap<SystemMessageHeader, SystemMessageContent>,
         delivered: HashSet<SystemMessageHeader>,
         ack: HashMap<SystemMessageHeader, HashSet<Uuid>>,
-    }
-
-    #[allow(dead_code)]
-    #[allow(unused)]
-    impl BasicReliableBroadcast {
-        fn store_pending(&mut self, hdr_msg: &SystemMessageHeader, content_msg: &SystemMessageContent) {
-            let key = BasicReliableBroadcast::hdr_to_key(hdr_msg);
-            let key = std::str::from_utf8(key.as_slice()).unwrap(); // TODO FOW NOW ONLY SPECIFIC THINGS hashing etc.
-            let value = &content_msg.msg;
-            let res = self.storage.put(key, value.as_slice());
-            match res {
-                Ok(_) => (),
-                Err(s) => println!("store_pending: {}", s),
-            }
-        }
-
-        fn store_delivered(hdr_msg: &SystemMessageHeader) {
-            unimplemented!()
-        }
-
-        fn hdr_to_key(hdr_msg: &SystemMessageHeader) -> Vec<u8> {
-            let m : [u8; 16] = hdr_msg.message_id.as_bytes().clone();
-            let p : [u8; 16] = hdr_msg.message_source_id.as_bytes().clone();
-            [m, p].concat()
-        }
-
-        fn key_to_hdr(v: &Vec<u8>) -> SystemMessageHeader {
-            // let m : &str = "a";
-            // let p : &str = "a";
-            // SystemMessageHeader{message_id: Uuid::from_bytes(m).unwrap(), message_source_id: Uuid::from_str(p).unwrap()}
-            unimplemented!()
-        }
     }
 
     impl ReliableBroadcast for BasicReliableBroadcast {
@@ -187,7 +152,11 @@ pub mod broadcast_public {
 
 pub mod stable_storage_public {
     use std::path::PathBuf;
-    use std::collections::HashMap;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::fs::File;
+    use std::io::Write;
+    use std::io::Read;
 
     pub trait StableStorage: Send {
         fn put(&mut self, key: &str, value: &[u8]) -> Result<(), String>;
@@ -195,40 +164,87 @@ pub mod stable_storage_public {
         fn get(&self, key: &str) -> Option<Vec<u8>>;
     }
 
+    pub fn build_stable_storage(root_storage_dir: PathBuf) -> Box<dyn StableStorage> {
+        Box::new(BasicStableStorage{root: root_storage_dir})
+    }
 
-pub struct RamStorage {
-    map: HashMap<String, Vec<u8>>,
-}
+    struct BasicStableStorage {
+        root: PathBuf,
+    }
 
-impl RamStorage {
-    pub fn new() -> Self {
-        Self {
-            map: HashMap::new(),
+    // impl BasicReliableBroadcast {
+    //     fn store_pending(&mut self, hdr_msg: &SystemMessageHeader, content_msg: &SystemMessageContent) {
+    //         let key = BasicReliableBroadcast::hdr_to_key(hdr_msg);
+    //         let key = std::str::from_utf8(key.as_slice()).unwrap(); // TODO FOW NOW ONLY SPECIFIC THINGS hashing etc.
+    //         let value = &content_msg.msg;
+    //         let res = self.storage.put(key, value.as_slice());
+    //         match res {
+    //             Ok(_) => (),
+    //             Err(s) => println!("store_pending: {}", s),
+    //         }
+    //     }
+
+    //     fn store_delivered(hdr_msg: &SystemMessageHeader) {
+    //         unimplemented!()
+    //     }
+
+    //     fn hdr_to_key(hdr_msg: &SystemMessageHeader) -> Vec<u8> {
+    //         let m : [u8; 16] = hdr_msg.message_id.as_bytes().clone();
+    //         let p : [u8; 16] = hdr_msg.message_source_id.as_bytes().clone();
+    //         [m, p].concat()
+    //     }
+
+    //     fn key_to_hdr(v: &Vec<u8>) -> SystemMessageHeader {
+    //         // let m : &str = "a";
+    //         // let p : &str = "a";
+    //         // SystemMessageHeader{message_id: Uuid::from_bytes(m).unwrap(), message_source_id: Uuid::from_str(p).unwrap()}
+    //         unimplemented!()
+    //     }
+    // }
+    
+    impl BasicStableStorage {
+        fn calculate_hash<T: Hash>(t: &T) -> u64 {
+            let mut s = DefaultHasher::new();
+            t.hash(&mut s);
+            s.finish()
+        }
+
+        fn key_to_fname(&self, key: &str) -> PathBuf {
+            let basename = BasicStableStorage::calculate_hash(&key).to_string();
+            let mut path = self.root.clone();
+            path.push(PathBuf::from(basename));
+            path
+        }
+    }
+    
+    impl StableStorage for BasicStableStorage {
+        fn put(&mut self, key: &str, value: &[u8]) -> Result<(), String> {
+            let fname = self.key_to_fname(key);
+            match File::create(fname) {
+                Ok(mut f) => {
+                    f.write_all(value).unwrap();
+                    Ok(())
+                },
+                Err(msg) => Err(msg.to_string())
+            }
+        }
+    
+        fn get(&self, key: &str) -> Option<Vec<u8>> {
+            let fname = self.key_to_fname(key);
+            match File::open(fname) {
+                Ok(mut f) => {
+                    let mut res = Vec::new();
+                    f.read_to_end(&mut res).unwrap();
+                    Some(res)
+                },
+                Err(_) => {
+                    None
+                },
+            }
         }
     }
 }
 
-impl Default for RamStorage {
-    fn default() -> Self {
-        RamStorage::new()
-    }
-}
-
-impl StableStorage for RamStorage {
-    fn put(&mut self, key: &str, value: &[u8]) -> Result<(), String> {
-        self.map.insert(key.to_string(), value.to_vec());
-        Ok(())
-    }
-
-    fn get(&self, key: &str) -> Option<Vec<u8>> {
-        self.map.get(key).cloned()
-    }
-}
-
-    pub fn build_stable_storage(_root_storage_dir: PathBuf) -> Box<dyn StableStorage> {
-        Box::new(RamStorage::new())
-    }
-}
 
 pub mod executors_public {
     use crate::executors_public::TickerMsg::RequestTick;
@@ -350,7 +366,7 @@ pub mod executors_public {
                         i if i == oper_meta_num => {
                             match oper.recv(&ticker_meta_rx).unwrap() {
                                 RequestTick(id, dur, lambda) => {
-                                    println!("[ticker] {:?} want's me to tick each {:?}", id, dur);
+                                    println!("[ticker] {:?} wants me to tick each {:?}", id, dur);
                                     let ticker = tick(dur);
                                     ticker_rxs_funs.insert(id, (ticker, lambda));
                                 }
