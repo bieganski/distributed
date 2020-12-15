@@ -16,6 +16,7 @@ pub mod broadcast_public {
     use std::collections::HashMap;
     use std::collections::HashSet;
     use uuid::Uuid;
+    use std::convert::TryInto;
 
     pub trait PlainSender: Send + Sync {
         fn send_to(&self, uuid: &Uuid, msg: PlainSenderMessage);
@@ -31,7 +32,7 @@ pub mod broadcast_public {
 
     pub struct BasicReliableBroadcast {
         sbeb: ModuleRef<StubbornBroadcastModule>,
-        storage: Box<dyn StableStorage>,
+        storage: StorageConnector,
         id: Uuid,
         processes_number: usize,
         delivered_callback: Box<dyn Fn(SystemMessage) + Send>,
@@ -41,21 +42,131 @@ pub mod broadcast_public {
         ack: HashMap<SystemMessageHeader, HashSet<Uuid>>,
     }
 
+    impl BasicReliableBroadcast {
+        pub fn new(
+            sbeb: ModuleRef<StubbornBroadcastModule>,
+            storage: Box<dyn StableStorage>,
+            id: Uuid,
+            processes_number: usize,
+            delivered_callback: Box<dyn Fn(SystemMessage) + Send>,
+        ) -> Self {
+    
+            let storage = StorageConnector{storage, free_pending_id: MSG_FIRST_ID, free_delivered_id: MSG_FIRST_ID};
+            let ack = HashMap::new();
+            let delivered = storage.restore_delivered(id);
+            let delivered = HashSet::from_iter(delivered);
+            let pending = storage.restore_pending(id);
+            Self{sbeb, storage, id, processes_number, delivered_callback, delivered, pending, ack}
+        }
+    }
+
+    pub struct StorageConnector {
+        storage: Box<dyn StableStorage>,
+        free_pending_id: usize,
+        free_delivered_id: usize,
+    }
+
+    pub enum StorageType {
+        DELIVERED,
+        PENDING,
+    }
+
+    static MSG_FIRST_ID  : usize = 0;
+    static MSG_HDR_BYTES : usize = 32;
+
+    impl StorageConnector {
+        
+        pub fn get_key_name(storage_type: StorageType, proc_id: &Uuid, num: usize) -> String {
+            let prefix = match storage_type {
+                StorageType::DELIVERED => "delivered",
+                StorageType::PENDING => "pending",
+            };
+            let id_str = proc_id.to_string();
+            [prefix, &id_str, &num.to_string()].concat()
+        }
+
+        pub fn restore_pending(&self, id : Uuid) -> HashMap<SystemMessageHeader, SystemMessageContent> {
+            let mut res = HashMap::new();    
+            let mut num = MSG_FIRST_ID;
+            let mut key = Self::get_key_name(StorageType::PENDING, &id, num);
+            while let Some(hdr_content_bytes) = self.storage.get(&key) {
+                let header = Self::bytes_to_hdr(&hdr_content_bytes);
+                let data = SystemMessageContent{msg: hdr_content_bytes[MSG_HDR_BYTES..].to_vec()};
+                res.insert(header, data);
+                num += 1;
+                key = Self::get_key_name(StorageType::PENDING, &id, num);
+            }
+            res
+        }
+        
+        // TODO unpub
+        pub fn restore_delivered(&self, id: Uuid) -> Vec<SystemMessageHeader> {
+            let mut res = Vec::new();
+            let mut num = MSG_FIRST_ID;
+            let mut key = Self::get_key_name(StorageType::DELIVERED, &id, num);
+            while let Some(hdr_content_bytes) = self.storage.get(&key) {
+                let msg = Self::bytes_to_hdr(&hdr_content_bytes);
+                res.push(msg);
+                num += 1;
+                key = Self::get_key_name(StorageType::DELIVERED, &id, num);
+            }
+            res
+        }
+
+        // stores message content as value
+        pub fn store_pending(&mut self, hdr_msg: &SystemMessageHeader, content_msg: &SystemMessageContent) {
+            let key = Self::get_key_name(StorageType::PENDING, &hdr_msg.message_source_id, self.free_pending_id);
+            self.free_pending_id += 1;
+            let mut bytes = Self::hdr_to_bytes(&hdr_msg);
+            bytes.extend(&content_msg.msg);
+            let res = self.storage.put(&key, &bytes);
+
+            match res {
+                Ok(_) => (),
+                Err(s) => println!("store_pending: {}", s),
+            }
+        }
+
+        // stores SystemHeader as value
+        pub fn store_delivered(&mut self, hdr_msg: &SystemMessageHeader) {
+            let key = Self::get_key_name(StorageType::DELIVERED, &hdr_msg.message_source_id, self.free_delivered_id);
+            let res = self.storage.put(&key, &Self::hdr_to_bytes(hdr_msg));
+            
+            match res {
+                Ok(_) => (),
+                Err(s) => println!("store_delivered: {}", s),
+            }
+        }
+
+        fn hdr_to_bytes(hdr_msg: &SystemMessageHeader) -> Vec<u8> {
+            let m : [u8; 16] = hdr_msg.message_id.as_bytes().clone();
+            let s : [u8; 16] = hdr_msg.message_source_id.as_bytes().clone();
+            [m, s].concat()
+        }
+
+        fn bytes_to_hdr(v: &Vec<u8>) -> SystemMessageHeader {
+            let m : [u8; 16] = v.as_slice()[..16].try_into().expect("could not retrieve message id");
+            let m = Uuid::from_bytes(m);
+            let s : [u8; 16] = v.as_slice()[16..32].try_into().expect("could not retrieve message source id");
+            let s = Uuid::from_bytes(s);
+            SystemMessageHeader{message_id: m, message_source_id: s}
+        }
+    }
     impl ReliableBroadcast for BasicReliableBroadcast {
         
         fn broadcast(&mut self, content_msg: SystemMessageContent) {
-            let header = SystemMessageHeader{message_id: self.id, message_source_id: Uuid::new_v4()};
-            println!("[broadcast]: proc {:?} generated message with id {}", self.id, &header.message_source_id.to_string()[0..5]);
+            let header = SystemMessageHeader{message_id: Uuid::new_v4(), message_source_id: self.id};
+            println!("[broadcast]: proc {:?} generated message with id {}", self.id, &header.message_id.to_string()[0..5]);
+            self.storage.store_pending(&header, &content_msg.clone());
             self.pending.insert(header.clone(), content_msg.clone());
-            // TODO store pending
             let message = SystemMessage{header, data: SystemMessageContent{msg: content_msg.msg}};
             self.sbeb.send(SystemBroadcastMessage{forwarder_id: self.id, message});
         }
 
         fn deliver_message(&mut self, msg: SystemBroadcastMessage) {
             if !self.pending.contains_key(&msg.message.header) {
-                self.pending.insert(msg.message.header.clone(), msg.message.data.clone()); // TODO na pewno clone?
-                // TODO store pending
+                self.pending.insert(msg.message.header.clone(), msg.message.data.clone());
+                self.storage.store_pending(&msg.message.header, &msg.message.data);
                 println!("[deliver_message]: sending ack to {:?} from {:?}", msg.forwarder_id, self.id);
                 self.sbeb.send((msg.forwarder_id, SystemAcknowledgmentMessage{proc: msg.forwarder_id, hdr: msg.message.header.clone()}));
                 println!("[deliver_message]: next broadcasting msg from {:?}", msg.forwarder_id);
@@ -63,17 +174,23 @@ pub mod broadcast_public {
             }
             if !self.ack.contains_key(&msg.message.header) {
                 self.ack.insert(msg.message.header.clone(), HashSet::new());
+            }
+            let ack_m : &mut HashSet<_> = self.ack.get_mut(&msg.message.header).unwrap(); // TODO nie trzeba usuwać unwrap
+            if !ack_m.contains(&msg.forwarder_id) {
+                ack_m.insert(msg.forwarder_id.clone());
                 if (self.ack.len() > self.processes_number / 2) && (!self.delivered.contains(&msg.message.header)) {
                     (self.delivered_callback)(msg.message.clone()); // TODO at least once semantics
+                    self.storage.store_delivered(&msg.message.header);
                     self.delivered.insert(msg.message.header.clone());
-                    // TODO store delivered
                     println!("[deliver_message]: sending ack to {:?} from {:?}", msg.forwarder_id, self.id);
                     println!("possible bug - sent twice?");
                     self.sbeb.send((msg.forwarder_id, SystemAcknowledgmentMessage{proc: msg.forwarder_id, hdr: msg.message.header}));
                 } 
             }
         }
-        fn receive_acknowledgment(&mut self, _: SystemAcknowledgmentMessage) { todo!() }
+        fn receive_acknowledgment(&mut self, ack: SystemAcknowledgmentMessage) {
+            self.sbeb.send((ack.proc, ack.hdr));
+        }
     }
 
     pub fn build_reliable_broadcast(
@@ -83,9 +200,11 @@ pub mod broadcast_public {
         processes_number: usize,
         delivered_callback: Box<dyn Fn(SystemMessage) + Send>,
     ) -> Box<dyn ReliableBroadcast> {
-
-        Box::new(BasicReliableBroadcast{sbeb, storage, id, processes_number, 
-            delivered_callback, delivered: HashSet::new(), pending: HashMap::new(), ack: HashMap::new()})
+        Box::new(
+            BasicReliableBroadcast::new(
+                sbeb, storage, id, processes_number, delivered_callback
+            )
+        )
     }
 
     pub trait StubbornBroadcast: Send {
@@ -171,36 +290,14 @@ pub mod stable_storage_public {
     }
 
     pub fn build_stable_storage(root_storage_dir: PathBuf) -> Box<dyn StableStorage> {
-        Box::new(BasicStableStorage{root: root_storage_dir, free_delivered_id: MSG_FIRST_ID, free_pending_id: MSG_FIRST_ID,})
+        Box::new(BasicStableStorage{root: root_storage_dir})
     }
 
-    // todo unpub
-    pub struct BasicStableStorage {
+    struct BasicStableStorage {
         pub root: PathBuf,
-        pub free_delivered_id: usize,
-        pub free_pending_id: usize,
     }
 
-    pub enum StorageType {
-        DELIVERED,
-        PENDING,
-    }
-
-    static MSG_FIRST_ID  : usize = 0;
-    static MSG_HDR_BYTES : usize = 32;
-
-    #[allow(dead_code)]
     impl BasicStableStorage {
-
-        pub fn get_key_name(storage_type: StorageType, proc_id: &Uuid, num: usize) -> String {
-            let prefix = match storage_type {
-                StorageType::DELIVERED => "delivered",
-                StorageType::PENDING => "pending",
-            };
-            let id_str = proc_id.to_string();
-            [prefix, &id_str, &num.to_string()].concat()
-        }
-        
         fn calculate_hash<T: Hash>(t: &T) -> u64 {
             let mut s = DefaultHasher::new();
             t.hash(&mut s);
@@ -213,100 +310,6 @@ pub mod stable_storage_public {
             path.push(PathBuf::from(basename));
             path
         }
-
-        pub fn restore_pending(&self, proc_ids : &Vec<Uuid>) -> Vec<SystemMessage>{
-            let mut res = Vec::new();
-            for id in proc_ids.iter() {
-                let mut num = MSG_FIRST_ID;
-                let mut key = Self::get_key_name(StorageType::PENDING, &id, num);
-                while let Some(hdr_content_bytes) = self.get(&key) {
-                    let msg = SystemMessage{
-                        header: Self::bytes_to_hdr(&hdr_content_bytes), 
-                        data: SystemMessageContent{
-                            msg: hdr_content_bytes[MSG_HDR_BYTES..].to_vec()
-                        }
-                    };
-                    res.push(msg);
-                    num += 1;
-                    key = Self::get_key_name(StorageType::PENDING, &id, num);
-                }
-            }
-            res
-        }
-        
-        // unpub
-        pub fn restore_delivered(&self, proc_ids : &Vec<Uuid>) -> Vec<SystemMessageHeader> {
-            let mut res = Vec::new();
-            for id in proc_ids.iter() {
-                let mut num = MSG_FIRST_ID;
-                let mut key = Self::get_key_name(StorageType::DELIVERED, &id, num);
-                while let Some(hdr_content_bytes) = self.get(&key) {
-                    let msg = Self::bytes_to_hdr(&hdr_content_bytes);
-                    res.push(msg);
-                    num += 1;
-                    key = Self::get_key_name(StorageType::DELIVERED, &id, num);
-                }
-            }
-            res
-        }
-
-        pub fn store_pending(&mut self, hdr_msg: &SystemMessageHeader, content_msg: &SystemMessageContent) {
-            let key = Self::get_key_name(StorageType::PENDING, &hdr_msg.message_source_id, self.free_pending_id);
-            self.free_pending_id += 1;
-            let mut bytes = Self::hdr_to_bytes(&hdr_msg);
-            bytes.extend(&content_msg.msg);
-            let res = self.put(&key, &bytes);
-
-            match res {
-                Ok(_) => (),
-                Err(s) => println!("store_pending: {}", s),
-            }
-        }
-
-        // stores SystemHeader as value
-        pub fn store_delivered(&mut self, hdr_msg: &SystemMessageHeader) {
-            let key = Self::get_key_name(StorageType::DELIVERED, &hdr_msg.message_source_id, self.free_delivered_id);
-            let res = self.put(&key, &Self::hdr_to_bytes(hdr_msg));
-            
-            match res {
-                Ok(_) => (),
-                Err(s) => println!("store_delivered: {}", s),
-            }
-            // let key = BasicStableStorage::hdr_to_bytes(hdr_msg);
-            // let value = key.clone(); // this won't be hashed unlike 'key'
-            // let key = ["delivered".as_bytes(), key.as_slice()].concat();
-            // let key = std::str::from_utf8(key.as_slice()).unwrap();
-            // self.put(key, value.as_slice()).unwrap();
-        }
-
-        fn hdr_to_bytes(hdr_msg: &SystemMessageHeader) -> Vec<u8> {
-            let m : [u8; 16] = hdr_msg.message_id.as_bytes().clone();
-            let s : [u8; 16] = hdr_msg.message_source_id.as_bytes().clone();
-            [m, s].concat()
-        }
-
-        fn bytes_to_hdr(v: &Vec<u8>) -> SystemMessageHeader {
-            let m : [u8; 16] = v.as_slice()[..16].try_into().expect("could not retrieve message id");
-            let m = Uuid::from_bytes(m);
-            let s : [u8; 16] = v.as_slice()[16..32].try_into().expect("could not retrieve message source id");
-            let s = Uuid::from_bytes(s);
-            SystemMessageHeader{message_id: m, message_source_id: s}
-        }
-
-        // fn wtf(value: &Vec<u8>) {
-        //     let message_source_id: [u8; 16] = value.as_slice()[0..16].try_into().
-        //         expect("[get_delivered] Could not retrieve message_source_id");
-        //     let message_id: [u8; 16] = value.as_slice()[16..32].try_into().
-        //         expect("[get_delivered] Could not retrieve message_id");
-        //     let msg = value.as_slice()[32..].to_vec();
-        //     Some(SystemMessage {
-        //         header: SystemMessageHeader {
-        //             message_source_id: Uuid::from_bytes(message_source_id),
-        //             message_id: Uuid::from_bytes(message_id),
-        //         },
-        //         data: SystemMessageContent { msg }
-        //     })
-        // }
     }
     
     impl StableStorage for BasicStableStorage {
