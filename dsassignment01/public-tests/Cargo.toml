@@ -12,6 +12,7 @@ crossbeam-channel = "0.5"
 uuid = { version = "0.8", features = ["v4"] }
 tempfile = "3.1"
 log = "*"
+rand = "0.7.3"
 
 [dependencies.simple_logger]
 version = "1.11"
