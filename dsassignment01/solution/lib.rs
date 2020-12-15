@@ -151,12 +151,18 @@ pub mod broadcast_public {
 }
 
 pub mod stable_storage_public {
+    use std::collections::HashMap;
+    use crate::domain::SystemMessage;
+    use crate::domain::SystemMessageContent;
+    use crate::domain::SystemMessageHeader;
     use std::path::PathBuf;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     use std::fs::File;
     use std::io::Write;
     use std::io::Read;
+    use uuid::Uuid;
+    use std::convert::TryInto;
 
     pub trait StableStorage: Send {
         fn put(&mut self, key: &str, value: &[u8]) -> Result<(), String>;
@@ -165,44 +171,36 @@ pub mod stable_storage_public {
     }
 
     pub fn build_stable_storage(root_storage_dir: PathBuf) -> Box<dyn StableStorage> {
-        Box::new(BasicStableStorage{root: root_storage_dir})
+        Box::new(BasicStableStorage{root: root_storage_dir, free_delivered_id: MSG_FIRST_ID, free_pending_id: MSG_FIRST_ID,})
     }
 
-    struct BasicStableStorage {
-        root: PathBuf,
+    // todo unpub
+    pub struct BasicStableStorage {
+        pub root: PathBuf,
+        pub free_delivered_id: usize,
+        pub free_pending_id: usize,
     }
 
-    // impl BasicReliableBroadcast {
-    //     fn store_pending(&mut self, hdr_msg: &SystemMessageHeader, content_msg: &SystemMessageContent) {
-    //         let key = BasicReliableBroadcast::hdr_to_key(hdr_msg);
-    //         let key = std::str::from_utf8(key.as_slice()).unwrap(); // TODO FOW NOW ONLY SPECIFIC THINGS hashing etc.
-    //         let value = &content_msg.msg;
-    //         let res = self.storage.put(key, value.as_slice());
-    //         match res {
-    //             Ok(_) => (),
-    //             Err(s) => println!("store_pending: {}", s),
-    //         }
-    //     }
+    pub enum StorageType {
+        DELIVERED,
+        PENDING,
+    }
 
-    //     fn store_delivered(hdr_msg: &SystemMessageHeader) {
-    //         unimplemented!()
-    //     }
+    static MSG_FIRST_ID  : usize = 0;
+    static MSG_HDR_BYTES : usize = 32;
 
-    //     fn hdr_to_key(hdr_msg: &SystemMessageHeader) -> Vec<u8> {
-    //         let m : [u8; 16] = hdr_msg.message_id.as_bytes().clone();
-    //         let p : [u8; 16] = hdr_msg.message_source_id.as_bytes().clone();
-    //         [m, p].concat()
-    //     }
-
-    //     fn key_to_hdr(v: &Vec<u8>) -> SystemMessageHeader {
-    //         // let m : &str = "a";
-    //         // let p : &str = "a";
-    //         // SystemMessageHeader{message_id: Uuid::from_bytes(m).unwrap(), message_source_id: Uuid::from_str(p).unwrap()}
-    //         unimplemented!()
-    //     }
-    // }
-    
+    #[allow(dead_code)]
     impl BasicStableStorage {
+
+        pub fn get_key_name(storage_type: StorageType, proc_id: &Uuid, num: usize) -> String {
+            let prefix = match storage_type {
+                StorageType::DELIVERED => "delivered",
+                StorageType::PENDING => "pending",
+            };
+            let id_str = proc_id.to_string();
+            [prefix, &id_str, &num.to_string()].concat()
+        }
+        
         fn calculate_hash<T: Hash>(t: &T) -> u64 {
             let mut s = DefaultHasher::new();
             t.hash(&mut s);
@@ -215,6 +213,100 @@ pub mod stable_storage_public {
             path.push(PathBuf::from(basename));
             path
         }
+
+        pub fn restore_pending(&self, proc_ids : &Vec<Uuid>) -> Vec<SystemMessage>{
+            let mut res = Vec::new();
+            for id in proc_ids.iter() {
+                let mut num = MSG_FIRST_ID;
+                let mut key = Self::get_key_name(StorageType::PENDING, &id, num);
+                while let Some(hdr_content_bytes) = self.get(&key) {
+                    let msg = SystemMessage{
+                        header: Self::bytes_to_hdr(&hdr_content_bytes), 
+                        data: SystemMessageContent{
+                            msg: hdr_content_bytes[MSG_HDR_BYTES..].to_vec()
+                        }
+                    };
+                    res.push(msg);
+                    num += 1;
+                    key = Self::get_key_name(StorageType::PENDING, &id, num);
+                }
+            }
+            res
+        }
+        
+        // unpub
+        pub fn restore_delivered(&self, proc_ids : &Vec<Uuid>) -> Vec<SystemMessageHeader> {
+            let mut res = Vec::new();
+            for id in proc_ids.iter() {
+                let mut num = MSG_FIRST_ID;
+                let mut key = Self::get_key_name(StorageType::DELIVERED, &id, num);
+                while let Some(hdr_content_bytes) = self.get(&key) {
+                    let msg = Self::bytes_to_hdr(&hdr_content_bytes);
+                    res.push(msg);
+                    num += 1;
+                    key = Self::get_key_name(StorageType::DELIVERED, &id, num);
+                }
+            }
+            res
+        }
+
+        pub fn store_pending(&mut self, hdr_msg: &SystemMessageHeader, content_msg: &SystemMessageContent) {
+            let key = Self::get_key_name(StorageType::PENDING, &hdr_msg.message_source_id, self.free_pending_id);
+            self.free_pending_id += 1;
+            let mut bytes = Self::hdr_to_bytes(&hdr_msg);
+            bytes.extend(&content_msg.msg);
+            let res = self.put(&key, &bytes);
+
+            match res {
+                Ok(_) => (),
+                Err(s) => println!("store_pending: {}", s),
+            }
+        }
+
+        // stores SystemHeader as value
+        pub fn store_delivered(&mut self, hdr_msg: &SystemMessageHeader) {
+            let key = Self::get_key_name(StorageType::DELIVERED, &hdr_msg.message_source_id, self.free_delivered_id);
+            let res = self.put(&key, &Self::hdr_to_bytes(hdr_msg));
+            
+            match res {
+                Ok(_) => (),
+                Err(s) => println!("store_delivered: {}", s),
+            }
+            // let key = BasicStableStorage::hdr_to_bytes(hdr_msg);
+            // let value = key.clone(); // this won't be hashed unlike 'key'
+            // let key = ["delivered".as_bytes(), key.as_slice()].concat();
+            // let key = std::str::from_utf8(key.as_slice()).unwrap();
+            // self.put(key, value.as_slice()).unwrap();
+        }
+
+        fn hdr_to_bytes(hdr_msg: &SystemMessageHeader) -> Vec<u8> {
+            let m : [u8; 16] = hdr_msg.message_id.as_bytes().clone();
+            let s : [u8; 16] = hdr_msg.message_source_id.as_bytes().clone();
+            [m, s].concat()
+        }
+
+        fn bytes_to_hdr(v: &Vec<u8>) -> SystemMessageHeader {
+            let m : [u8; 16] = v.as_slice()[..16].try_into().expect("could not retrieve message id");
+            let m = Uuid::from_bytes(m);
+            let s : [u8; 16] = v.as_slice()[16..32].try_into().expect("could not retrieve message source id");
+            let s = Uuid::from_bytes(s);
+            SystemMessageHeader{message_id: m, message_source_id: s}
+        }
+
+        // fn wtf(value: &Vec<u8>) {
+        //     let message_source_id: [u8; 16] = value.as_slice()[0..16].try_into().
+        //         expect("[get_delivered] Could not retrieve message_source_id");
+        //     let message_id: [u8; 16] = value.as_slice()[16..32].try_into().
+        //         expect("[get_delivered] Could not retrieve message_id");
+        //     let msg = value.as_slice()[32..].to_vec();
+        //     Some(SystemMessage {
+        //         header: SystemMessageHeader {
+        //             message_source_id: Uuid::from_bytes(message_source_id),
+        //             message_id: Uuid::from_bytes(message_id),
+        //         },
+        //         data: SystemMessageContent { msg }
+        //     })
+        // }
     }
     
     impl StableStorage for BasicStableStorage {
@@ -235,9 +327,11 @@ pub mod stable_storage_public {
                 Ok(mut f) => {
                     let mut res = Vec::new();
                     f.read_to_end(&mut res).unwrap();
+                    println!("--- znalazlem!");
                     Some(res)
                 },
                 Err(_) => {
+                    println!("--- nie znalazlem nic!");
                     None
                 },
             }
