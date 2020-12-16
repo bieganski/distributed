@@ -1,6 +1,5 @@
 mod domain;
 
-use std::path::PathBuf;
 pub use crate::broadcast_public::*;
 pub use crate::executors_public::*;
 pub use crate::stable_storage_public::*;
@@ -156,7 +155,7 @@ pub mod broadcast_public {
         
         fn broadcast(&mut self, content_msg: SystemMessageContent) {
             let header = SystemMessageHeader{message_id: Uuid::new_v4(), message_source_id: self.id};
-            println!("[broadcast]: proc {:?} generated message with id {}", self.id, &header.message_id.to_string()[0..5]);
+            // log::info!("[broadcast]: proc {:?} generated message with id {}", self.id, &header.message_id.to_string()[0..5]);
             self.storage.store_pending(&header, &content_msg.clone());
             self.pending.insert(header.clone(), content_msg.clone());
             let message = SystemMessage{header, data: SystemMessageContent{msg: content_msg.msg}};
@@ -167,9 +166,9 @@ pub mod broadcast_public {
             if !self.pending.contains_key(&msg.message.header) {
                 self.pending.insert(msg.message.header.clone(), msg.message.data.clone());
                 self.storage.store_pending(&msg.message.header, &msg.message.data);
-                log::debug!("[deliver_message]: sending ack to {:?} from {:?}", msg.forwarder_id, self.id);
+                // log::info!("[deliver_message]: sending ack to {:?} from {:?}", msg.forwarder_id, self.id);
                 self.sbeb.send((msg.forwarder_id, SystemAcknowledgmentMessage{proc: self.id, hdr: msg.message.header.clone()}));
-                log::debug!("[deliver_message]: next broadcasting msg from {:?}", msg.forwarder_id);
+                // log::info!("[deliver_message]: next broadcasting msg from {:?}", msg.forwarder_id);
                 self.sbeb.send(SystemBroadcastMessage{forwarder_id: self.id, message: msg.message.clone()});
             }
             if !self.ack.contains_key(&msg.message.header) {
@@ -182,9 +181,7 @@ pub mod broadcast_public {
                     (self.delivered_callback)(msg.message.clone()); // 'at least once' semantics
                     self.storage.store_delivered(&msg.message.header);
                     self.delivered.insert(msg.message.header.clone());
-                    // println!("[deliver_message]: sending ack to {:?} from {:?}", msg.forwarder_id, self.id);
-                    // println!("possible bug - sent twice?");
-                    // self.sbeb.send((msg.forwarder_id, SystemAcknowledgmentMessage{proc: self.id, hdr: msg.message.header.clone()}));
+                    self.sbeb.send((msg.forwarder_id, SystemAcknowledgmentMessage{proc: self.id, hdr: msg.message.header.clone()}));
                 } 
             }
         }
