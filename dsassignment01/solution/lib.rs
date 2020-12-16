@@ -168,23 +168,23 @@ pub mod broadcast_public {
                 self.pending.insert(msg.message.header.clone(), msg.message.data.clone());
                 self.storage.store_pending(&msg.message.header, &msg.message.data);
                 println!("[deliver_message]: sending ack to {:?} from {:?}", msg.forwarder_id, self.id);
-                self.sbeb.send((msg.forwarder_id, SystemAcknowledgmentMessage{proc: msg.forwarder_id, hdr: msg.message.header.clone()}));
+                self.sbeb.send((msg.forwarder_id, SystemAcknowledgmentMessage{proc: self.id, hdr: msg.message.header.clone()}));
                 println!("[deliver_message]: next broadcasting msg from {:?}", msg.forwarder_id);
                 self.sbeb.send(SystemBroadcastMessage{forwarder_id: self.id, message: msg.message.clone()});
             }
             if !self.ack.contains_key(&msg.message.header) {
                 self.ack.insert(msg.message.header.clone(), HashSet::new());
             }
-            let ack_m : &mut HashSet<_> = self.ack.get_mut(&msg.message.header).unwrap(); // TODO nie trzeba usuwać unwrap
+            let ack_m : &mut HashSet<_> = self.ack.get_mut(&msg.message.header).unwrap(); // that 'unwrap' won't panic
             if !ack_m.contains(&msg.forwarder_id) {
                 ack_m.insert(msg.forwarder_id.clone());
                 if (self.ack.len() > self.processes_number / 2) && (!self.delivered.contains(&msg.message.header)) {
-                    (self.delivered_callback)(msg.message.clone()); // TODO at least once semantics
+                    (self.delivered_callback)(msg.message.clone()); // 'at least once' semantics
                     self.storage.store_delivered(&msg.message.header);
                     self.delivered.insert(msg.message.header.clone());
                     println!("[deliver_message]: sending ack to {:?} from {:?}", msg.forwarder_id, self.id);
                     println!("possible bug - sent twice?");
-                    self.sbeb.send((msg.forwarder_id, SystemAcknowledgmentMessage{proc: msg.forwarder_id, hdr: msg.message.header}));
+                    // self.sbeb.send((msg.forwarder_id, SystemAcknowledgmentMessage{proc: self.id, hdr: msg.message.header.clone()}));
                 } 
             }
         }
@@ -232,7 +232,7 @@ pub mod broadcast_public {
             self.ack.insert(b_msg.message.header, HashSet::from_iter(self.processes.clone()));
             
             for id in self.processes.iter() {
-                println!("[sbeb]: sending to {:?} from forwarder {:?}", id, b_msg.forwarder_id);
+                log::debug!("[sbeb]: sending to {:?} from forwarder {:?}", id, b_msg.forwarder_id);
                 self.link.send_to(id, Broadcast(b_msg.clone()));
             }
 
@@ -240,12 +240,20 @@ pub mod broadcast_public {
         }
 
         fn receive_acknowledgment(&mut self, id: Uuid, hdr_msg: SystemMessageHeader) {
-            let msg_acks = self.ack.get_mut(&hdr_msg).unwrap(); 
-            msg_acks.remove(&id);
-            if msg_acks.is_empty() {
-                self.contents.remove(&hdr_msg).unwrap();
-                self.ack.remove(&hdr_msg);
+            let msg_acks = self.ack.get_mut(&hdr_msg);
+            match msg_acks {
+                None => {
+                    log::error!("[receive_acknowledgement][internal] 'ack' array inconsistency!");
+                },
+                Some(msg_acks) => {
+                    msg_acks.remove(&id);
+                    if msg_acks.is_empty() {
+                        self.contents.remove(&hdr_msg);
+                        self.ack.remove(&hdr_msg);
+                    }
+                }
             }
+            
         }
 
         fn send_acknowledgment(&mut self, id: Uuid, ack_msg: SystemAcknowledgmentMessage) {
@@ -255,7 +263,11 @@ pub mod broadcast_public {
         fn tick(&mut self) {
             for (hdr_msg, procs) in self.ack.iter() {
                 for id in procs.iter() {
-                    self.link.send_to(id, Broadcast(self.contents.get(&hdr_msg).unwrap().clone()));
+                    let content = self.contents.get(&hdr_msg);
+                    match content {
+                        None => log::error!("[tick][internal] 'contents' array inconsistency!"),
+                        Some(content) => self.link.send_to(id, Broadcast(content.clone())),
+                    }
                 }
             }
         }
@@ -270,18 +282,12 @@ pub mod broadcast_public {
 }
 
 pub mod stable_storage_public {
-    use std::collections::HashMap;
-    use crate::domain::SystemMessage;
-    use crate::domain::SystemMessageContent;
-    use crate::domain::SystemMessageHeader;
     use std::path::PathBuf;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     use std::fs::File;
     use std::io::Write;
     use std::io::Read;
-    use uuid::Uuid;
-    use std::convert::TryInto;
 
     pub trait StableStorage: Send {
         fn put(&mut self, key: &str, value: &[u8]) -> Result<(), String>;
@@ -315,9 +321,9 @@ pub mod stable_storage_public {
     impl StableStorage for BasicStableStorage {
         fn put(&mut self, key: &str, value: &[u8]) -> Result<(), String> {
             let fname = self.key_to_fname(key);
-            match File::create(fname) {
+            match File::create(fname.clone()) {
                 Ok(mut f) => {
-                    f.write_all(value).unwrap();
+                    f.write_all(value).unwrap_or_else(|_| {log::error!("[fs] cannot write to {:?}", &fname);});
                     Ok(())
                 },
                 Err(msg) => Err(msg.to_string())
@@ -326,15 +332,16 @@ pub mod stable_storage_public {
     
         fn get(&self, key: &str) -> Option<Vec<u8>> {
             let fname = self.key_to_fname(key);
-            match File::open(fname) {
+            match File::open(fname.clone()) {
                 Ok(mut f) => {
                     let mut res = Vec::new();
-                    f.read_to_end(&mut res).unwrap();
-                    println!("--- znalazlem!");
+                    f.read_to_end(&mut res).unwrap_or_else(|_| {
+                        log::error!("[fs] cannot read from {:?}", &fname);
+                        return 0;
+                    });
                     Some(res)
                 },
                 Err(_) => {
-                    println!("--- nie znalazlem nic!");
                     None
                 },
             }
@@ -402,7 +409,7 @@ pub mod executors_public {
                 2: Box::new(move || {
                         requester_cloned.send(Tick{});
                     })
-            }).unwrap();
+            }).unwrap_or_else(|_| log::error!("[request_tick] cannot send value via crossbeam channel!"));
         }
 
         pub fn register_module<T: Send + 'static>(&mut self, module: T) -> ModuleRef<T> {
@@ -425,18 +432,38 @@ pub mod executors_public {
 
             let executor = std::thread::spawn(move || {
                 loop {
-                    match executor_meta_rx.recv().unwrap() {
+                    let msg = executor_meta_rx.recv();
+                    if msg.is_err() {
+                        log::error!("[System::new()][executor] - error receiving message via crossbeam channel!");
+                    }
+                    // that unwrap won't panic
+                    match msg.unwrap() {
                         NewModule(_) => {
                             unimplemented!()
                         },
                         RemoveModule(id) => {
-                            workers_cloned_executor.lock().unwrap().remove(&id).unwrap();
+                            match workers_cloned_executor.lock() {
+                                Ok(mut res) => match res.remove(&id) {
+                                                    Some(_) => (),
+                                                    None => log::error!("[System::new()][executor][internal] double worker remove detected!"),
+                                                }
+                                Err(_)      => ()
+                            }
                         },
                         ExecuteModule(id) => {
-                            let mut map = workers_cloned_executor.lock().unwrap();
-                            let mut w = map.get_mut(&id).unwrap();
-                            let worker : &mut Box<dyn WorkerType + Send> = &mut w;
-                            worker.execute();
+                            match workers_cloned_executor.lock() {
+                                Ok(mut workers) => {
+                                    match workers.get_mut(&id) {
+                                        Some(mut w) => {
+                                            let worker : &mut Box<dyn WorkerType + Send> = &mut w;
+                                            worker.execute();
+                                        },
+                                        None => log::error!("[System::new()][executor][internal] malformed 'workers' map, probably bad adding new module"),
+                                    }
+                                }
+                                Err(_) => log::error!("[System::new()][executor][internal] mutex lock error!"),
+                            }
+                            
                         },
                     }
                 }
@@ -461,19 +488,33 @@ pub mod executors_public {
                     let idx = oper.index();
                     match idx {
                         i if i == oper_meta_num => {
-                            match oper.recv(&ticker_meta_rx).unwrap() {
+                            let msg = oper.recv(&ticker_meta_rx);
+                            if msg.is_err() {
+                                log::error!("[System][ticker] error reading from crossbeam channel!");
+                                continue;
+                            }
+                            // that unwrap won't panic
+                            match msg.unwrap() {
                                 RequestTick(id, dur, lambda) => {
-                                    println!("[ticker] {:?} wants me to tick each {:?}", id, dur);
+                                    log::debug!("[System][ticker] {:?} wants me to tick each {:?}", id, dur);
                                     let ticker = tick(dur);
                                     ticker_rxs_funs.insert(id, (ticker, lambda));
                                 }
                             }
                         },
                         i => {
-                            let mod_id = mods.get(&i).unwrap().clone();
-                            let (ticker, lambda) = ticker_rxs_funs.get(&mod_id).unwrap();
-                            oper.recv(&ticker).unwrap();
-                            lambda(); // that simply sends Tick to ModuleRef and runs all the machinery
+                            let chain = mods.get(&i)
+                                .and_then(|id| {ticker_rxs_funs.get(&id)})
+                                .and_then(|(ticker, lambda)| {lambda(); oper.recv(&ticker).ok()});
+
+                            if chain.is_none() {
+                                log::error!("[System][ticker] problems reveiving tick message..");
+                            }
+                            
+                            // let mod_id = mods.get(&i).unwrap().clone();
+                            // let (ticker, lambda) = ticker_rxs_funs.get(&mod_id).unwrap();
+                            // oper.recv(&ticker).unwrap();
+                            // lambda(); // that simply sends Tick to ModuleRef and runs all the machinery
                         }
                     }
                 }
@@ -499,7 +540,9 @@ pub mod executors_public {
 
     impl<T> Drop for ModuleRefData<T> {
         fn drop(&mut self) {
-            self.meta.send(RemoveModule{0: self.id}).unwrap();
+            if self.meta.send(RemoveModule{0: self.id}).is_err() {
+                log::error!("[ModuleRefData][Drop] problem sending to 'meta' via crossbeam channel!");
+            }
         }
     }
 
@@ -514,8 +557,10 @@ pub mod executors_public {
 
     impl<T> WorkerType for Worker<T> {
         fn execute(&mut self) {
-            let f = self.receiver.recv().unwrap();
-            f(&mut self.module);
+            match self.receiver.recv() {
+                Ok(f) => f(&mut self.module),
+                Err(_) => log::error!("[WorkerType][execute] problem receiving message from 'receiver' via crossbeam channel!"),
+            }
         }
     }
 
@@ -527,8 +572,14 @@ pub mod executors_public {
             let message = move |module: &mut T| {
                 module.handle(msg);
             };
-            self.data.worker_buffer.send(Box::new(message)).unwrap();
-            self.data.meta.send(ExecuteModule{0: self.data.id}).unwrap();
+            if self.data.worker_buffer.send(Box::new(message)).is_err() {
+                log::error!("[ModuleRef][send] problem sending to 'worker_buffer' via crossbeam channel!");
+                return;
+            }
+            if self.data.meta.send(ExecuteModule{0: self.data.id}).is_err() {
+                log::error!("[ModuleRef][send] problem sending to 'meta' via crossbeam channel!");
+                return;
+            }
         }
     }
 
