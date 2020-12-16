@@ -8,6 +8,7 @@ use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use uuid::Uuid;
+use std::path::PathBuf;
 
 type SingleProcessSenderData = HashMap<Uuid, ModuleRef<ReliableBroadcastModule>>;
 
@@ -23,12 +24,16 @@ fn main() {
     let sender = SingleProcessSender::new();
     let mut system = System::new();
 
+    let mut path = PathBuf::new();
+    path.push("/home/mateusz/matinek/");
+
     let reg1 = setup_system(
         &mut system,
         Configuration {
             self_process_identifier: ident1,
             processes: idents.clone(),
-            stable_storage: build_stable_storage(tempdir_path.path().join("a")),
+            // stable_storage: build_stable_storage(tempdir_path.path().join("a")),
+            stable_storage: build_stable_storage(path.clone().join("a")),
             sender: sender.duplicate(),
             retransmission_delay: Duration::from_millis(100),
             delivered_callback: Box::new(|msg| {
@@ -40,12 +45,14 @@ fn main() {
             }),
         },
     );
+    
     let reg2 = setup_system(
         &mut system,
         Configuration {
             self_process_identifier: ident2,
             processes: idents,
-            stable_storage: build_stable_storage(tempdir_path.path().join("b")),
+            // stable_storage: build_stable_storage(tempdir_path.path().join("b")),
+            stable_storage: build_stable_storage(path.join("b")),
             sender: sender.duplicate(),
             retransmission_delay: Duration::from_millis(100),
             delivered_callback: Box::new(|msg| {
@@ -68,7 +75,7 @@ fn main() {
         reg1.send(SystemMessageContent {
             msg: "Hello world!".to_string().into_bytes(),
         });
-        std::thread::sleep(Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(500));
     }
 }
 

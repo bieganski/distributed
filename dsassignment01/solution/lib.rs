@@ -123,7 +123,7 @@ pub mod broadcast_public {
 
             match res {
                 Ok(_) => (),
-                Err(s) => println!("store_pending: {}", s),
+                Err(s) => println!("[StorageConnector][store_pending]: {}", s),
             }
         }
 
@@ -134,7 +134,7 @@ pub mod broadcast_public {
             
             match res {
                 Ok(_) => (),
-                Err(s) => println!("store_delivered: {}", s),
+                Err(s) => log::error!("[StorageConnector][store_delivered]: {}", s),
             }
         }
 
@@ -167,9 +167,9 @@ pub mod broadcast_public {
             if !self.pending.contains_key(&msg.message.header) {
                 self.pending.insert(msg.message.header.clone(), msg.message.data.clone());
                 self.storage.store_pending(&msg.message.header, &msg.message.data);
-                println!("[deliver_message]: sending ack to {:?} from {:?}", msg.forwarder_id, self.id);
+                log::debug!("[deliver_message]: sending ack to {:?} from {:?}", msg.forwarder_id, self.id);
                 self.sbeb.send((msg.forwarder_id, SystemAcknowledgmentMessage{proc: self.id, hdr: msg.message.header.clone()}));
-                println!("[deliver_message]: next broadcasting msg from {:?}", msg.forwarder_id);
+                log::debug!("[deliver_message]: next broadcasting msg from {:?}", msg.forwarder_id);
                 self.sbeb.send(SystemBroadcastMessage{forwarder_id: self.id, message: msg.message.clone()});
             }
             if !self.ack.contains_key(&msg.message.header) {
@@ -182,8 +182,8 @@ pub mod broadcast_public {
                     (self.delivered_callback)(msg.message.clone()); // 'at least once' semantics
                     self.storage.store_delivered(&msg.message.header);
                     self.delivered.insert(msg.message.header.clone());
-                    println!("[deliver_message]: sending ack to {:?} from {:?}", msg.forwarder_id, self.id);
-                    println!("possible bug - sent twice?");
+                    // println!("[deliver_message]: sending ack to {:?} from {:?}", msg.forwarder_id, self.id);
+                    // println!("possible bug - sent twice?");
                     // self.sbeb.send((msg.forwarder_id, SystemAcknowledgmentMessage{proc: self.id, hdr: msg.message.header.clone()}));
                 } 
             }
@@ -296,6 +296,10 @@ pub mod stable_storage_public {
     }
 
     pub fn build_stable_storage(root_storage_dir: PathBuf) -> Box<dyn StableStorage> {
+        match std::fs::create_dir_all(&root_storage_dir) {
+            Ok(_) => (),
+            Err(err) => log::error!("[build_stable_storage] cannot create directory! '{}'", err),
+        }
         Box::new(BasicStableStorage{root: root_storage_dir})
     }
 
@@ -321,6 +325,7 @@ pub mod stable_storage_public {
     impl StableStorage for BasicStableStorage {
         fn put(&mut self, key: &str, value: &[u8]) -> Result<(), String> {
             let fname = self.key_to_fname(key);
+            log::debug!("[BasicStableStorage] put: trying to open file {:?}", &fname);
             match File::create(fname.clone()) {
                 Ok(mut f) => {
                     f.write_all(value).unwrap_or_else(|_| {log::error!("[fs] cannot write to {:?}", &fname);});
@@ -332,6 +337,7 @@ pub mod stable_storage_public {
     
         fn get(&self, key: &str) -> Option<Vec<u8>> {
             let fname = self.key_to_fname(key);
+            log::debug!("[BasicStableStorage] get: trying to open file {:?}", &fname);
             match File::open(fname.clone()) {
                 Ok(mut f) => {
                     let mut res = Vec::new();
