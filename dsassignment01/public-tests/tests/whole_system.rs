@@ -157,7 +157,7 @@ fn communication_stops_if_everything_works() {
 }
 
 #[test]
-#[timeout(3000)]
+#[timeout(5000)]
 fn communication_stops_with_faulty_links() {
     let mut sys_setup = SystemSetup::new(3, Duration::from_millis(50));
     sys_setup.start_random_broadcasts(0, 3);
