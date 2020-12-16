@@ -12,11 +12,21 @@ use std::path::PathBuf;
 
 type SingleProcessSenderData = HashMap<Uuid, ModuleRef<ReliableBroadcastModule>>;
 
+
+use log::{LevelFilter};
+use simplelog::{Config, TermLogger, TerminalMode};
+
 fn main() {
-    SimpleLogger::new()
-        .with_level(log::Level::Info.to_level_filter())
-        .init()
-        .unwrap();
+
+
+    TermLogger::init(LevelFilter::Trace, Config::default(), TerminalMode::Mixed)
+    .expect("No interactive terminal");
+
+
+    // SimpleLogger::new()
+    //     .with_level(log::Level::Info.to_level_filter())
+    //     .init()
+    //     .unwrap();
     let tempdir_path = tempfile::tempdir().unwrap();
     let ident1 = Uuid::new_v4();
     let ident2 = Uuid::new_v4();

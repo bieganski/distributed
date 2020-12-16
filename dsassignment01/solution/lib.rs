@@ -55,6 +55,10 @@ pub mod broadcast_public {
             let delivered = storage.restore_delivered(id);
             let delivered = HashSet::from_iter(delivered);
             let pending = storage.restore_pending(id);
+            for (hdr, content) in pending.iter() {
+                log::info!("RECOVRY!!!!!");
+                sbeb.send(SystemBroadcastMessage{message: SystemMessage{data: content.clone(), header: hdr.clone()}, forwarder_id: id.clone()});
+            }
             Self{sbeb, storage, id, processes_number, delivered_callback, delivered, pending, ack}
         }
     }
@@ -155,6 +159,7 @@ pub mod broadcast_public {
         
         fn broadcast(&mut self, content_msg: SystemMessageContent) {
             let header = SystemMessageHeader{message_id: Uuid::new_v4(), message_source_id: self.id};
+            log::warn!("id: {} generated msg: {}", &self.id.to_string()[0..5], &header.message_id.to_string()[0..5]);
             // log::info!("[broadcast]: proc {:?} generated message with id {}", self.id, &header.message_id.to_string()[0..5]);
             self.storage.store_pending(&header, &content_msg.clone());
             self.pending.insert(header.clone(), content_msg.clone());
@@ -163,12 +168,15 @@ pub mod broadcast_public {
         }
 
         fn deliver_message(&mut self, msg: SystemBroadcastMessage) {
+            self.sbeb.send((msg.forwarder_id, SystemAcknowledgmentMessage{proc: self.id, hdr: msg.message.header.clone()}));
+            log::info!("[deliver_message]: sending ack to {:?} from {:?}", msg.forwarder_id, self.id);
+
             if !self.pending.contains_key(&msg.message.header) {
+                
                 self.pending.insert(msg.message.header.clone(), msg.message.data.clone());
                 self.storage.store_pending(&msg.message.header, &msg.message.data);
-                // log::info!("[deliver_message]: sending ack to {:?} from {:?}", msg.forwarder_id, self.id);
-                self.sbeb.send((msg.forwarder_id, SystemAcknowledgmentMessage{proc: self.id, hdr: msg.message.header.clone()}));
-                // log::info!("[deliver_message]: next broadcasting msg from {:?}", msg.forwarder_id);
+                log::info!("[deliver_message]: next broadcasting msg from {:?}", msg.forwarder_id);
+                // self.sbeb.send((msg.forwarder_id, SystemAcknowledgmentMessage{proc: self.id, hdr: msg.message.header.clone()}));
                 self.sbeb.send(SystemBroadcastMessage{forwarder_id: self.id, message: msg.message.clone()});
             }
             if !self.ack.contains_key(&msg.message.header) {
@@ -179,9 +187,10 @@ pub mod broadcast_public {
                 ack_m.insert(msg.forwarder_id.clone());
                 if (self.ack.len() > self.processes_number / 2) && (!self.delivered.contains(&msg.message.header)) {
                     (self.delivered_callback)(msg.message.clone()); // 'at least once' semantics
+                    
                     self.storage.store_delivered(&msg.message.header);
                     self.delivered.insert(msg.message.header.clone());
-                    self.sbeb.send((msg.forwarder_id, SystemAcknowledgmentMessage{proc: self.id, hdr: msg.message.header.clone()}));
+                    // self.sbeb.send((msg.forwarder_id, msg.message.header.clone()));
                 } 
             }
         }
@@ -226,10 +235,11 @@ pub mod broadcast_public {
     impl StubbornBroadcast for BasicStubbornBroadcast {
     
         fn broadcast(&mut self, b_msg: SystemBroadcastMessage) {
+            log::debug!("\n-- [sbeb]: inserting {:?} to ack", b_msg.message.header);
             self.ack.insert(b_msg.message.header, HashSet::from_iter(self.processes.clone()));
             
             for id in self.processes.iter() {
-                log::debug!("[sbeb]: sending to {:?} from forwarder {:?}", id, b_msg.forwarder_id);
+                log::debug!("\n[sbeb]: sending to {:?} from forwarder {:?}", &id.to_string()[0..5], &b_msg.forwarder_id.to_string()[0..5]);
                 self.link.send_to(id, Broadcast(b_msg.clone()));
             }
 
@@ -237,10 +247,12 @@ pub mod broadcast_public {
         }
 
         fn receive_acknowledgment(&mut self, id: Uuid, hdr_msg: SystemMessageHeader) {
+            log::warn!("get ACK from {}, msg: {:?}", &id.to_string()[0..5], &hdr_msg);
             let msg_acks = self.ack.get_mut(&hdr_msg);
+            log::debug!("\n-- [sbeb]: getting {:?} from ack", hdr_msg);
             match msg_acks {
                 None => {
-                    log::error!("[receive_acknowledgement][internal] 'ack' array inconsistency!");
+                    log::error!("[receive_acknowledgement][internal] 'ack' array inconsistency! no key: {:?}", hdr_msg);
                 },
                 Some(msg_acks) => {
                     msg_acks.remove(&id);
@@ -438,6 +450,7 @@ pub mod executors_public {
                     let msg = executor_meta_rx.recv();
                     if msg.is_err() {
                         log::error!("[System::new()][executor] - error receiving message via crossbeam channel!");
+                        continue;
                     }
                     // that unwrap won't panic
                     match msg.unwrap() {

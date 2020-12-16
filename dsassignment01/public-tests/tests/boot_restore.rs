@@ -82,24 +82,31 @@ fn check_delivered(id :Uuid, storage: Box<dyn StableStorage>,
     rx
 }
 
+
+use log::{LevelFilter};
+use simplelog::{Config, TermLogger, TerminalMode};
+
 #[test]
 #[timeout(300)]
 fn reliable_broadcast_restoring_pending() {
     //given
+    TermLogger::init(LevelFilter::Trace, Config::default(), TerminalMode::Mixed)
+    .expect("No interactive terminal");
+
     let id = Uuid::new_v4();
     let root_storage_dir = tempdir().unwrap();
 
     let storage = build_stable_storage(root_storage_dir.path().to_path_buf());
     let rx = check_pending(id, storage);
     // new message has been forwarded
-    assert!(rx.try_recv().is_ok());
+    assert!(rx.recv().is_ok());
 
     let storage1 = build_stable_storage(root_storage_dir.path().to_path_buf());
     let rx1 = check_pending(id, storage1);
     // message sent right after restoring
     rx1.recv().unwrap();
     // message was not forwarded, because it was already in pending
-    assert!(rx1.try_recv().is_err());
+    assert!(rx1.recv().is_err());
 }
 
 fn check_pending(id :Uuid, storage: Box<dyn StableStorage>) -> Receiver<Uuid> {

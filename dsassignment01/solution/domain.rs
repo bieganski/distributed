@@ -1,7 +1,10 @@
+use core::fmt::Debug;
 use crate::{PlainSender, StableStorage};
 use std::collections::HashSet;
 use std::time::Duration;
 use uuid::Uuid;
+use std::fmt;
+// use std::Write::write_str;
 
 pub struct Configuration {
     pub self_process_identifier: Uuid,
@@ -19,7 +22,17 @@ pub struct SystemMessage {
     pub data: SystemMessageContent,
 }
 
-#[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
+
+impl fmt::Debug for SystemMessageHeader {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        let m = &self.message_id.to_string()[0..5];
+        let p = &self.message_source_id.to_string()[0..5];
+        let s = format!("HDR: (proc: {:?}, msg: {:?}",  p, m);
+        f.write_str(&s)
+    }
+}
+
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub struct SystemMessageHeader {
     /// identifier of process which issued this message
     pub message_source_id: Uuid,
