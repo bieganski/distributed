@@ -22,7 +22,7 @@ pub async fn read_value(reader: &Recipient<Read>) -> Circle {
 
 pub async fn write_value(writer: &Addr<WriterProcess>, value: Circle) {
     let (tx_writer_done, rx_writer_done) = unbounded();
-
+    
     writer
         .try_send(Write {
             value,

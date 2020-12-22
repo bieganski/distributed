@@ -1,5 +1,6 @@
-use actix::{Actor, Addr, Context, Handler, Message, Recipient};
-use std::collections::HashSet;
+use uuid::Uuid;
+use actix::{Actor, AsyncContext, Addr, Context, Handler, Message, Recipient};
+use std::collections::{HashSet, HashMap};
 
 /// Argument is the total number of processes, this means that size of the vector of readers
 /// must be `processes - 1`. The leftover writer process is returned as the first element
@@ -29,11 +30,11 @@ pub async fn build_system(processes: usize) -> (Addr<WriterProcess>, Vec<Addr<Re
 }
 
 fn build_writer() -> WriterProcess {
-    unimplemented!()
+    WriterProcess::default()
 }
 
 fn build_reader() -> ReaderProcess {
-    unimplemented!()
+    ReaderProcess::default()
 }
 
 /// Type stored in register.
@@ -47,10 +48,54 @@ pub struct Circle {
 type RegisterValue = Circle;
 
 /// Add any fields you wish.
-pub struct WriterProcess;
+pub struct WriterProcess {
+    id : Uuid,
+    val : RegisterValue,
+    wts : Timestamp,
+    acks : usize,
+    all_procs: HashSet<Recipient<MessageBroadcast>>,
+    callback: Option<Box<dyn Fn() + Send>>,
+}
+
+type ReadListType = HashMap<Uuid, (Timestamp, RegisterValue)>;
+
 /// Add any fields you wish. `Default` implementation is necessary for tests.
-#[derive(Default)]
-pub struct ReaderProcess;
+pub struct ReaderProcess {
+    id : Uuid,
+    ts : Timestamp,
+    val : RegisterValue,
+    rid : Timestamp,
+    readlist : ReadListType,
+    all_procs: HashSet<Recipient<MessageBroadcast>>,
+    callback: Option<Box<dyn Fn(RegisterValue) + Send>>,
+}
+
+impl Default for ReaderProcess {
+    fn default() -> Self {
+        Self {
+            id : Uuid::new_v4(),
+            ts : Timestamp{value: 0},
+            val : RegisterValue::default(),
+            rid : Timestamp{value: 0},
+            readlist : ReadListType::default(),
+            all_procs: HashSet::default(),
+            callback: None,
+        }
+    }
+}
+
+impl Default for WriterProcess {
+    fn default() -> Self {
+        Self {
+            id : Uuid::new_v4(),
+            val : RegisterValue::default(),
+            wts : Timestamp{value: 0},
+            all_procs: HashSet::default(),
+            callback: None,
+            acks: 0,
+        }
+    }
+}
 
 #[derive(Message)]
 #[rtype(result = "()")]
@@ -84,56 +129,162 @@ impl Actor for ReaderProcess {
 impl Handler<Write> for WriterProcess {
     type Result = ();
 
-    fn handle(&mut self, _: Write, _: &mut Self::Context) -> Self::Result {
-        unimplemented!()
+    fn handle(&mut self, msg: Write, cxt: &mut Self::Context) -> Self::Result {
+        self.callback = Some(msg.write_return_callback);
+        self.acks = 0;
+        self.wts.value += 1;
+        for p in self.all_procs.iter() {
+            log::error!("sending wts: {}", self.wts.value);
+            p.do_send(MessageBroadcast::WriteBroadcast(msg.value, self.wts, cxt.address().recipient())).unwrap();
+        }
     }
 }
 
 impl Handler<Read> for WriterProcess {
     type Result = ();
 
-    fn handle(&mut self, _: Read, _: &mut Self::Context) -> Self::Result {
-        unimplemented!()
+    fn handle(&mut self, msg: Read, _: &mut Self::Context) -> Self::Result {
+        msg.read_return_callback.as_ref()(self.val);
     }
 }
 
 impl Handler<Init> for WriterProcess {
     type Result = ();
 
-    fn handle(&mut self, _: Init, _: &mut Self::Context) -> Self::Result {
-        unimplemented!()
+    fn handle(&mut self, init: Init, _: &mut Self::Context) -> Self::Result {
+        log::info!("writer got init");
+        self.all_procs = init.0;
     }
 }
 
 impl Handler<Read> for ReaderProcess {
     type Result = ();
 
-    fn handle(&mut self, _: Read, _: &mut Self::Context) -> Self::Result {
-        unimplemented!()
+    fn handle(&mut self, msg: Read, cxt: &mut Self::Context) -> Self::Result {
+        self.callback = Some(msg.read_return_callback);
+        self.rid.value += 1;
+        log::info!("reader got Read");
+        // let mut requests : Vec<RecipientRequest<_>> = Vec::new();
+        for p in self.all_procs.iter() {
+            p.do_send(MessageBroadcast::ReadBroadcast(self.rid, cxt.address().recipient())).unwrap();
+            // requests.push(r);
+        }
+
+        // for r in requests.drain(..) {
+        //     await_request(r);
+        // }
     }
 }
 
 impl Handler<Init> for ReaderProcess {
     type Result = ();
 
-    fn handle(&mut self, _: Init, _: &mut Self::Context) -> Self::Result {
-        unimplemented!()
+    fn handle(&mut self, msg: Init, _: &mut Self::Context) -> Self::Result {
+        self.all_procs = msg.0;
+        log::info!("reader got Init");
     }
 }
+
 
 impl Handler<MessageBroadcast> for WriterProcess {
     type Result = ();
 
-    fn handle(&mut self, _: MessageBroadcast, _: &mut Self::Context) -> Self::Result {
-        unimplemented!()
+    fn handle(&mut self, msg: MessageBroadcast, _: &mut Self::Context) -> Self::Result {
+        log::info!("writer got Bcast");
+        match msg {
+            MessageBroadcast::ReadBroadcast(ts, recipient) => {
+                let val = ReadValue{
+                    from: self.id,
+                    ts: self.wts,
+                    value: self.val,
+                    rid: ts,
+                };
+                recipient.do_send(val).unwrap();
+                // await_request(r);
+            },
+            MessageBroadcast::WriteBroadcast(_, _, me) => {
+                // from me
+                // assert_eq!(from, self.id);
+                me.do_send(WriteAck{ts: self.wts}).unwrap();
+            },
+        }
     }
 }
 
 impl Handler<MessageBroadcast> for ReaderProcess {
     type Result = ();
 
-    fn handle(&mut self, _: MessageBroadcast, _: &mut Self::Context) -> Self::Result {
-        unimplemented!()
+    fn handle(&mut self, msg: MessageBroadcast, _: &mut Self::Context) -> Self::Result {
+        log::info!("reader got Bcast");
+        match msg {
+            MessageBroadcast::ReadBroadcast(ts, recipient) => {
+                let val = ReadValue{
+                    from: self.id,
+                    ts: self.ts,
+                    value: self.val,
+                    rid: ts,
+                };
+                recipient.do_send(val).unwrap();
+                // await_request(r);
+            },
+            
+            MessageBroadcast::WriteBroadcast(val, ts, recipient) => {
+                if ts > self.ts {
+                    self.val = val;
+                    self.ts = ts;
+                }
+                recipient.do_send(WriteAck{ts}).unwrap();
+                // await_request(r);
+            },
+        }
+    }
+}
+
+fn highest_val(map : &ReadListType) -> (Timestamp, RegisterValue) {
+    assert_ne!(map.len(), 0);
+    println!("mapa: {:?}", map);
+    *map
+        .iter()
+        .max_by(|a, b| ((a.1).0).cmp(&(b.1).0))
+        .map(|(_k, v)| v).unwrap()
+}
+
+impl Handler<ReadValue> for ReaderProcess {
+    type Result = ();
+    fn handle(&mut self, msg: ReadValue, _: &mut Self::Context) -> Self::Result { 
+        log::warn!("reader: dostalem ack-readlist");
+        if self.rid == msg.rid {
+            log::error!("aaaa from: {:?}", &msg.from);
+            self.readlist.insert(msg.from, (msg.ts, msg.value));
+            log::error!(">>>> {:?}, {:?}", self.readlist.len(), self.all_procs.len());
+            if self.readlist.len() > (self.all_procs.len() / 2) {
+                let (k, v) = highest_val(&self.readlist);
+                self.readlist.drain();
+                self.ts = k;
+                self.val = v;
+                log::error!("found max: {:?}, {:?}", k, v);
+                log::error!("read callback");
+                self.callback.as_ref().unwrap()(v);
+            }
+        }
+    }
+}
+
+impl Handler<WriteAck> for WriterProcess {
+    type Result = ();
+
+    fn handle(&mut self, msg: WriteAck, _: &mut Self::Context) -> Self::Result {
+        log::warn!("writer: dostalem ack");
+        if msg.ts != self.wts {
+            return;
+        }
+        log::error!("bbbb");
+        self.acks += 1;
+        if self.acks > (self.all_procs.len() / 2) {
+            self.acks = 0;
+            log::error!("write callback");
+            self.callback.as_ref().unwrap()();
+        }
     }
 }
 
@@ -141,9 +292,9 @@ impl Handler<MessageBroadcast> for ReaderProcess {
 /// If you need some type defined here with private visibility to be public, just go ahead
 /// and make it more visible. As always, do not export less public types than in template.
 
-#[derive(Copy, Clone, Default, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[derive(Debug, Copy, Clone, Default, Ord, PartialOrd, Eq, PartialEq, Hash)]
 /// Timestamp type.
-struct Timestamp {
+pub struct Timestamp {
     value: u128,
 }
 
@@ -153,18 +304,25 @@ struct Timestamp {
 #[derive(Message)]
 #[rtype(result = "()")]
 /// Reply to WRITE message - ACK.
-struct WriteAck {}
+pub struct WriteAck {
+    ts: Timestamp,
+}
 
 #[derive(Message)]
 #[rtype(result = "()")]
 /// Broadcast message - either write or read. WARNING. This is public, although you
 /// can define any fields you want.
 pub enum MessageBroadcast {
-    WriteBroadcast,
-    ReadBroadcast,
+    WriteBroadcast(RegisterValue, Timestamp, Recipient<WriteAck>),
+    ReadBroadcast(Timestamp, Recipient<ReadValue>),
 }
 
 #[derive(Message)]
 #[rtype(result = "()")]
 /// Reply to READ message.
-struct ReadValue {}
+pub struct ReadValue {
+    from: Uuid,
+    ts: Timestamp,
+    value: RegisterValue,
+    rid: Timestamp,
+}
