@@ -132,9 +132,9 @@ impl Handler<Write> for WriterProcess {
     fn handle(&mut self, msg: Write, cxt: &mut Self::Context) -> Self::Result {
         self.callback = Some(msg.write_return_callback);
         self.acks = 0;
+        self.val = msg.value;
         self.wts.value += 1;
         for p in self.all_procs.iter() {
-            log::error!("sending wts: {}", self.wts.value);
             p.do_send(MessageBroadcast::WriteBroadcast(msg.value, self.wts, cxt.address().recipient())).unwrap();
         }
     }
@@ -152,7 +152,6 @@ impl Handler<Init> for WriterProcess {
     type Result = ();
 
     fn handle(&mut self, init: Init, _: &mut Self::Context) -> Self::Result {
-        log::info!("writer got init");
         self.all_procs = init.0;
     }
 }
@@ -163,16 +162,9 @@ impl Handler<Read> for ReaderProcess {
     fn handle(&mut self, msg: Read, cxt: &mut Self::Context) -> Self::Result {
         self.callback = Some(msg.read_return_callback);
         self.rid.value += 1;
-        log::info!("reader got Read");
-        // let mut requests : Vec<RecipientRequest<_>> = Vec::new();
         for p in self.all_procs.iter() {
             p.do_send(MessageBroadcast::ReadBroadcast(self.rid, cxt.address().recipient())).unwrap();
-            // requests.push(r);
         }
-
-        // for r in requests.drain(..) {
-        //     await_request(r);
-        // }
     }
 }
 
@@ -181,7 +173,6 @@ impl Handler<Init> for ReaderProcess {
 
     fn handle(&mut self, msg: Init, _: &mut Self::Context) -> Self::Result {
         self.all_procs = msg.0;
-        log::info!("reader got Init");
     }
 }
 
@@ -190,7 +181,6 @@ impl Handler<MessageBroadcast> for WriterProcess {
     type Result = ();
 
     fn handle(&mut self, msg: MessageBroadcast, _: &mut Self::Context) -> Self::Result {
-        log::info!("writer got Bcast");
         match msg {
             MessageBroadcast::ReadBroadcast(ts, recipient) => {
                 let val = ReadValue{
@@ -200,11 +190,8 @@ impl Handler<MessageBroadcast> for WriterProcess {
                     rid: ts,
                 };
                 recipient.do_send(val).unwrap();
-                // await_request(r);
             },
             MessageBroadcast::WriteBroadcast(_, _, me) => {
-                // from me
-                // assert_eq!(from, self.id);
                 me.do_send(WriteAck{ts: self.wts}).unwrap();
             },
         }
@@ -215,7 +202,6 @@ impl Handler<MessageBroadcast> for ReaderProcess {
     type Result = ();
 
     fn handle(&mut self, msg: MessageBroadcast, _: &mut Self::Context) -> Self::Result {
-        log::info!("reader got Bcast");
         match msg {
             MessageBroadcast::ReadBroadcast(ts, recipient) => {
                 let val = ReadValue{
@@ -225,7 +211,6 @@ impl Handler<MessageBroadcast> for ReaderProcess {
                     rid: ts,
                 };
                 recipient.do_send(val).unwrap();
-                // await_request(r);
             },
             
             MessageBroadcast::WriteBroadcast(val, ts, recipient) => {
@@ -234,7 +219,6 @@ impl Handler<MessageBroadcast> for ReaderProcess {
                     self.ts = ts;
                 }
                 recipient.do_send(WriteAck{ts}).unwrap();
-                // await_request(r);
             },
         }
     }
@@ -242,7 +226,6 @@ impl Handler<MessageBroadcast> for ReaderProcess {
 
 fn highest_val(map : &ReadListType) -> (Timestamp, RegisterValue) {
     assert_ne!(map.len(), 0);
-    println!("mapa: {:?}", map);
     *map
         .iter()
         .max_by(|a, b| ((a.1).0).cmp(&(b.1).0))
@@ -251,19 +234,14 @@ fn highest_val(map : &ReadListType) -> (Timestamp, RegisterValue) {
 
 impl Handler<ReadValue> for ReaderProcess {
     type Result = ();
-    fn handle(&mut self, msg: ReadValue, _: &mut Self::Context) -> Self::Result { 
-        log::warn!("reader: dostalem ack-readlist");
+    fn handle(&mut self, msg: ReadValue, _: &mut Self::Context) -> Self::Result {
         if self.rid == msg.rid {
-            log::error!("aaaa from: {:?}", &msg.from);
             self.readlist.insert(msg.from, (msg.ts, msg.value));
-            log::error!(">>>> {:?}, {:?}", self.readlist.len(), self.all_procs.len());
             if self.readlist.len() > (self.all_procs.len() / 2) {
                 let (k, v) = highest_val(&self.readlist);
                 self.readlist.drain();
                 self.ts = k;
                 self.val = v;
-                log::error!("found max: {:?}, {:?}", k, v);
-                log::error!("read callback");
                 self.callback.as_ref().unwrap()(v);
             }
         }
@@ -274,15 +252,12 @@ impl Handler<WriteAck> for WriterProcess {
     type Result = ();
 
     fn handle(&mut self, msg: WriteAck, _: &mut Self::Context) -> Self::Result {
-        log::warn!("writer: dostalem ack");
         if msg.ts != self.wts {
             return;
         }
-        log::error!("bbbb");
         self.acks += 1;
         if self.acks > (self.all_procs.len() / 2) {
             self.acks = 0;
-            log::error!("write callback");
             self.callback.as_ref().unwrap()();
         }
     }
