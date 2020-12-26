@@ -34,9 +34,6 @@ fn main() {
             .next()
             .unwrap(),
     );
-    //////////////
-    println!("addr2: {:?}", addr2);
-    //////////////
     let all_idents: HashSet<Uuid> = [addr1, addr2].iter().map(|v| v.0).collect();
     let addresses: HashMap<Uuid, SocketAddr> = [addr1, addr2].iter().cloned().collect();
 

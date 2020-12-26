@@ -19,6 +19,7 @@ type UdpSink = SplitSink<UdpFramed<BytesCodec>, SinkItem>;
 pub struct FailureDetectorActor {
     sink: SinkWrite<SinkItem, UdpSink>,
     addresses: HashMap<Uuid, SocketAddr>,
+    id: Uuid,
 }
 
 impl Actor for FailureDetectorActor {
@@ -30,12 +31,12 @@ impl StreamHandler<DetectorOperationUdp> for FailureDetectorActor {
     fn handle(&mut self, item: DetectorOperationUdp, _ctx: &mut Self::Context) {
         let detector_operation = item.0;
 
-        // let _ = match detector_operation {
-        //     DetectorOperation::HeartbeatRequest(uuid) => None,
-        //     DetectorOperation::HeartbeatResponse(uuid) => None,
-        //     DetectorOperation::UpRequest => None,
-        //     DetectorOperation::UpInfo(vec) => None,
-        // };
+        let _ = match detector_operation {
+            DetectorOperation::HeartbeatRequest(uuid) => None,
+            DetectorOperation::HeartbeatResponse(uuid) => None,
+            DetectorOperation::UpRequest => None,
+            DetectorOperation::UpInfo(vec) => None,
+        };
 
         panic!("message type not supported");
     }
@@ -84,7 +85,8 @@ impl FailureDetectorActor {
             // }
             FailureDetectorActor {
                 sink: sink,
-                addresses: addresses.clone()
+                addresses: addresses.clone(),
+                id: ident,
             }
             // unimplemented!()
         })
@@ -93,11 +95,13 @@ impl FailureDetectorActor {
     /// Called periodically to check send broadcast and update alive processes.
     fn tick(&mut self) {
         // TODO finish tick - it is registered in `new`.
-        for val in self.addresses.values() {
-            val.send();
+        for addr in self.addresses.values() {
+            println!("tick {:?}", addr);
+            let bytes = bincode::serialize(&DetectorOperation::HeartbeatRequest(self.id)).unwrap();
+            self.sink.write((bytes.into(), *addr));
         }
         
-        unimplemented!()
+        // unimplemented!()
     }
 }
 

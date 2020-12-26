@@ -52,12 +52,9 @@ impl From<u8> for Num {
         Num { n }
     }
 }
-use std::{thread, time};
 
 #[actix_rt::main]
 async fn async_actor_example() {
-    let ten_millis = time::Duration::from_millis(3000);
-    thread::sleep(ten_millis);
     let addr = PowerActor { base: 2 }.start();
     // Waiting for returned result - that simple.
     // Think how problematic it would be in a synchronous function -

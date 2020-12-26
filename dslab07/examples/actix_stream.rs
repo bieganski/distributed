@@ -7,7 +7,6 @@ to communicate with it. */
 
 /// The API is rather involved...
 /// When using streams, it best to look for working examples.
-use actix::Handler;
 use actix::io::SinkWrite;
 use actix::{Actor, AsyncContext, Context, Message, StreamHandler};
 use bytes::Bytes;
@@ -54,15 +53,6 @@ impl StreamHandler<UdpPacket> for UdpActor {
     }
 }
 
-impl Handler<UdpPacket> for UdpActor {
-    type Result = ();
-    fn handle(&mut self, msg: UdpPacket, _: &mut Context<Self>) {
-        println!("Received: ({:?}, {:?})", msg.0, msg.1);
-        // Write to sink transfers performs UdpSocket.send_to under the hood.
-        self.sink.write((msg.0.into(), msg.1));
-    }
-}
-
 /// Handling of errors when writing (sending) messages.
 /// The default is to stop actor.
 impl actix::io::WriteHandler<std::io::Error> for UdpActor {}
@@ -80,7 +70,7 @@ async fn main() {
     let (sink, stream) = UdpFramed::new(sock, BytesCodec::new()).split();
     // Actor::create is similar to actor.start, but gives access to Context when
     // creating an actor.
-    let actor = UdpActor::create(|ctx| {
+    UdpActor::create(|ctx| {
         // This is how you register a stream. Notice how a filter is registered - it is
         // asynchronous function, as the reason for streams is having asynchronous pipelines.
         ctx.add_stream(
@@ -88,18 +78,10 @@ async fn main() {
                 item.map(|(data, sender)| UdpPacket(data, sender)).ok()
             }),
         );
-        let sink = SinkWrite::new(sink, ctx);
-
         UdpActor {
-            sink
+            sink: SinkWrite::new(sink, ctx),
         }
     });
-
-    let bytes = BytesMut::from("aaa");
-    let packet = UdpPacket(bytes, addr);
-
-    actor.send(packet).await.unwrap();
-
 
     // Arbiter is the event loop itself which runs futures in actix.
     // You can get arbiter for this thread using `actix::Arbiter::current` (if
