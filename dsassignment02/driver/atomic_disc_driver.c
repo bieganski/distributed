@@ -385,6 +385,7 @@ static int __init atdd_init(void)
     return err;
   }
   ATDD_MAJOR = err;
+  printk(KERN_DEBUG "atdd: major: %d", ATDD_MAJOR);
 
   if ((err = atdd_dev_init(&atdd)) < 0)
     unregister_blkdev(ATDD_MAJOR, ATDD_BLKDEV_NAME);

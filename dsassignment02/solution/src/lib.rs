@@ -1,5 +1,8 @@
 mod domain;
 
+#[macro_use]
+mod utils;
+
 pub use crate::domain::*;
 pub use atomic_register_public::*;
 pub use register_client_public::*;
@@ -73,14 +76,82 @@ pub mod sectors_manager_public {
     }
 }
 
+static MAGIC: &[u8; 4] = &[0x61, 0x74, 0x64, 0x64];
 /// Your internal representation of RegisterCommand for ser/de can be anything you want,
 /// we just would like some hooks into your solution to asses where the problem is, should
 /// there be a problem.
 pub mod transfer_public {
-    use crate::RegisterCommand;
-    use std::io::{Error, Read, Write};
+    use crate::domain::SectorVec;
+use crate::RegisterCommand;
+    use crate::MAGIC;
+    use crate::ClientRegisterCommand;
+    use crate::ClientCommandHeader;
+    use crate::ClientRegisterCommandContent;
+    use crate::utils;
+    use std::io::{Error, Read, Write, BufWriter, Cursor};
 
     pub fn deserialize_register_command(data: &mut dyn Read) -> Result<RegisterCommand, Error> {
+        unimplemented!()
+    }
+
+    pub enum Direction {
+        Request,
+        ReadResponse(SectorVec),
+        WriteResponse,
+    }
+
+    fn serialize_register_command_generic(
+        cmd: &RegisterCommand,
+        writer: &mut dyn Write,
+        direction: Direction,
+    ) -> Result<(), Error> {
+        let stream = writer;  // replace it with File or Cursor::new(Vec::<u8>::new()) for testing purposes
+        let mut buf_writer = BufWriter::new(stream);
+        match cmd {
+            RegisterCommand::Client(ClientRegisterCommand{header, content}) => {
+                let ClientCommandHeader{request_identifier, sector_idx} = header;
+                let mut separable_part = BufWriter::new(Cursor::new(Vec::<u8>::new()));
+
+                let msg_type : u8;
+
+                match content {
+                    ClientRegisterCommandContent::Read => {
+                        msg_type = if let Direction::Request = direction {0x1} else {0x41};
+
+                        if let Direction::Request = direction {
+                            safe_unwrap!(separable_part.write_all(&sector_idx.to_be_bytes()));
+                        }
+                        if let Direction::ReadResponse(data) = direction {
+                            let SectorVec(data) = data;
+                            safe_unwrap!(separable_part.write_all(&data));
+                        }
+                    },
+                    ClientRegisterCommandContent::Write{data} => {
+                        msg_type = if let Direction::Request = direction {0x2} else {0x42};
+
+                        if let Direction::Request = direction {
+                            safe_unwrap!(separable_part.write_all(&sector_idx.to_be_bytes()));
+                            let SectorVec(data) = data;
+                            safe_unwrap!(separable_part.write_all(&data));
+                        }
+                    }
+                }
+                
+                // common part
+                vec![
+                    buf_writer.write_all(MAGIC),
+                    buf_writer.write_all(&[0x0, 0x0, 0x0]), // padding
+                    buf_writer.write_all(&msg_type.to_be_bytes()),
+                    buf_writer.write_all(&request_identifier.to_be_bytes()),
+                ].into_iter().for_each(|x| {safe_unwrap!(x)});
+
+                // part that depends on msg. type
+                safe_unwrap!(buf_writer.write_all(separable_part.buffer()));
+            },
+            RegisterCommand::System(_) => {
+                unimplemented!()
+            },
+        }
         unimplemented!()
     }
 
@@ -88,7 +159,7 @@ pub mod transfer_public {
         cmd: &RegisterCommand,
         writer: &mut dyn Write,
     ) -> Result<(), Error> {
-        unimplemented!()
+        serialize_register_command_generic(cmd, writer, Direction::Request{})
     }
 }
 
