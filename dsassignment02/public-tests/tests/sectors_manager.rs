@@ -1,13 +1,17 @@
 use assignment_2_solution::{build_sectors_manager, SectorVec};
 use ntest::timeout;
 use tempfile::tempdir;
+use std::path::PathBuf;
 
 #[tokio::test]
 #[timeout(200)]
 async fn drive_can_store_data() {
     // given
-    let root_drive_dir = tempdir().unwrap();
-    let sectors_manager = build_sectors_manager(root_drive_dir.into_path());
+    // let root_drive_dir = tempdir().unwrap();
+    // let root_drive_dir = std::fs::File::open("./omg").unwrap();
+    let mut path = PathBuf::new();
+    path.push("./omg");
+    let sectors_manager = build_sectors_manager(path);
 
     // when
     sectors_manager

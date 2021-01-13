@@ -55,7 +55,21 @@ pub mod sectors_manager_public {
     use std::sync::Arc;
     use crate::{SectorIdx, SectorVec};
     use std::path::PathBuf;
+    use std::io::SeekFrom;
+    use std::path::Path;
+    use tokio::task;
+    use tokio::fs::File;
+    use tokio::fs::OpenOptions;
+    use tokio::prelude::*;
+    // use std::thread::JoinHandle;
+    // use tokio::runtime::{Builder, Runtime};
+    use serde::{Deserialize, Serialize};
+    use bincode;
 
+    // use tokio::prelude::Future;
+
+
+    
     #[async_trait::async_trait]
     pub trait SectorsManager: Send + Sync {
         /// Returns 4096 bytes of sector data by index.
@@ -72,15 +86,124 @@ pub mod sectors_manager_public {
 
     /// Path parameter points to a directory to which this method has exclusive access.
     pub fn build_sectors_manager(path: PathBuf) -> Arc<dyn SectorsManager> {
-        unimplemented!()
+        // unimplemented!()
+        // let task = tokio::fs::create_dir(super::META_DIR);
+            // .and_then(|mut file| file.poll_write(b"hello, world!"))
+            // .map(|res| {
+            //     println!("{:?}", res);
+            // }).map_err(|err| eprintln!("IO error: {:?}", err));
+
+        // tokio::run(task);
+        let mut path_copy = path.clone();
+        
+        // let task = task::spawn( async move {
+        //     path_copy.push(META_DIR);
+        //     log::error!("path: {:?}", path_copy);
+        //     tokio::fs::create_dir(path_copy.clone()).await.unwrap();
+        //     path_copy.pop();
+        //     path_copy.push(SECTORS_DIR);
+        //     log::error!("path2: {:?}", path_copy);
+        //     tokio::fs::create_dir(path_copy).await.unwrap();
+            // tokio::join!(
+            //     tokio::fs::create_dir(META_DIR),
+            //     tokio::fs::create_dir(SECTORS_DIR),
+            // );
+        // });
+
+        
+
+        // tokio::join!(task);
+        // let single_thread_runtime = Builder::new_current_thread().build().unwrap();
+        // let multi_threaded_runtime = Runtime::new().unwrap();
+
+    // Moving values into async task.
+        // multi_threaded_runtime.block_on(task).unwrap();
+        // log::error!("joined!");
+
+        Arc::new(BasicSectorsManager{path})
+    }
+
+    pub struct BasicSectorsManager {
+        path: PathBuf,
+    }
+
+    impl BasicSectorsManager {
+        fn filepath(&self, idx: SectorIdx ) -> PathBuf {
+            let mut tmp = self.path.clone();
+            tmp.push(idx.to_string());
+            tmp
+        }
+    }
+    
+    #[async_trait::async_trait]
+    impl SectorsManager for BasicSectorsManager {
+
+        async fn read_metadata(&self, idx: SectorIdx) -> (u64, u8) {
+            let path = self.filepath(idx);
+            let file = tokio::fs::File::open(&path).await;
+            
+            let mut res = vec![];
+
+            match file {
+                Ok(mut file) => {
+                    file.seek(SeekFrom::Start(4096)).await.unwrap();
+                    file.read_to_end(&mut res).await.unwrap();
+                },
+                Err(_) => {},
+            }
+
+            bincode::deserialize(&res).unwrap()
+        }
+
+        async fn read_data(&self, idx: SectorIdx) -> SectorVec {
+            let path = self.filepath(idx);
+            let file = tokio::fs::File::open(&path).await;
+            
+            let mut tmp : [u8; 4096] = [0; 4096];
+            match file {
+                Ok(mut file) => {
+                    file.read_exact(&mut tmp).await.unwrap();
+                },
+                Err(_) => {},
+            }
+
+            let mut res = Vec::new();
+            res.extend_from_slice(&tmp);
+            SectorVec(res)
+        }
+
+        async fn write(&self, idx: SectorIdx, sector: &(SectorVec, u64, u8)) {
+            let path = self.filepath(idx);
+            let file = tokio::fs::File::open(&path).await;
+            
+            let mut file = match file {
+                Ok(file) => {
+                    file
+                },
+                Err(_) => {
+                    OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .open(&path)
+                        .await.unwrap()
+                },
+            };
+            file.seek(SeekFrom::Start(0)).await.unwrap();
+            let SectorVec(data) = &sector.0;
+            file.write_all(&data).await.unwrap();
+            let meta = (sector.1, sector.2);
+            file.write_all(&bincode::serialize(&meta).unwrap()).await.unwrap();
+        }
     }
 }
 
+
 const MAGIC: &[u8; 4] = &[0x61, 0x74, 0x64, 0x64];
 const MSG_OFFSET : usize = 7;
-const RESPONSE_MSG_TYPE_ADD : u8 = 0x40;
-const MSG_READ : u8 = 0x1;
-const MSG_WRITE : u8 = 0x2;
+// TODO those should be used sometime
+// const RESPONSE_MSG_TYPE_ADD : u8 = 0x40;
+// const MSG_READ : u8 = 0x1;
+// const MSG_WRITE : u8 = 0x2;
 
 const REQ_NUM_OFFSET : usize = 8;
 const SECTOR_IDX_OFFSET : usize = 16;
@@ -114,7 +237,9 @@ pub mod transfer_public {
         deserialize_register_command_generic(data, Direction::Request{})
     }
 
-    fn deserialize_register_command_generic(data: &mut dyn Read, direction : Direction) -> Result<RegisterCommand, Error> {
+    fn deserialize_register_command_generic(
+        data: &mut dyn Read, 
+        direction : Direction) -> Result<RegisterCommand, Error> {
         let mut read_buf = vec![];
         let num = data.read_to_end(&mut read_buf).unwrap();
 
