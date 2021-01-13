@@ -94,7 +94,7 @@ pub mod sectors_manager_public {
             // }).map_err(|err| eprintln!("IO error: {:?}", err));
 
         // tokio::run(task);
-        let mut path_copy = path.clone();
+        // let mut path_copy = path.clone();
         
         // let task = task::spawn( async move {
         //     path_copy.push(META_DIR);
@@ -174,7 +174,10 @@ pub mod sectors_manager_public {
 
         async fn write(&self, idx: SectorIdx, sector: &(SectorVec, u64, u8)) {
             let path = self.filepath(idx);
-            let file = tokio::fs::File::open(&path).await;
+            let file = OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .await;
             
             let mut file = match file {
                 Ok(file) => {
@@ -220,7 +223,6 @@ pub mod transfer_public {
     use crate::ClientRegisterCommand;
     use crate::ClientCommandHeader;
     use crate::ClientRegisterCommandContent;
-    use crate::utils;
     use std::convert::TryInto;
     use std::io::{Error, Read, Write, BufWriter, Cursor};
 

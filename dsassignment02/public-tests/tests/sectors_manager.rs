@@ -7,10 +7,10 @@ use std::path::PathBuf;
 #[timeout(200)]
 async fn drive_can_store_data() {
     // given
-    // let root_drive_dir = tempdir().unwrap();
-    // let root_drive_dir = std::fs::File::open("./omg").unwrap();
+    let root_drive_dir = tempdir().unwrap();
     let mut path = PathBuf::new();
-    path.push("./omg");
+    path.push(root_drive_dir.path());
+    // path.push("./omg");
     let sectors_manager = build_sectors_manager(path);
 
     // when
