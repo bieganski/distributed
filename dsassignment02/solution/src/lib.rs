@@ -76,7 +76,12 @@ pub mod sectors_manager_public {
     }
 }
 
-static MAGIC: &[u8; 4] = &[0x61, 0x74, 0x64, 0x64];
+const MAGIC: &[u8; 4] = &[0x61, 0x74, 0x64, 0x64];
+const MSG_OFFSET : usize = 7;
+const RESPONSE_MSG_TYPE_ADD : u8 = 0x40;
+const MSG_READ : u8 = 0x1;
+const MSG_WRITE : u8 = 0x2;
+
 /// Your internal representation of RegisterCommand for ser/de can be anything you want,
 /// we just would like some hooks into your solution to asses where the problem is, should
 /// there be a problem.
@@ -90,15 +95,61 @@ use crate::RegisterCommand;
     use crate::utils;
     use std::io::{Error, Read, Write, BufWriter, Cursor};
 
-    pub fn deserialize_register_command(data: &mut dyn Read) -> Result<RegisterCommand, Error> {
-        unimplemented!()
-    }
 
+    #[derive(Debug)]
     pub enum Direction {
         Request,
         ReadResponse(SectorVec),
         WriteResponse,
     }
+
+
+    pub fn deserialize_register_command(data: &mut dyn Read) -> Result<RegisterCommand, Error> {
+        deserialize_register_command_generic(data, Direction::Request{})
+    }
+
+    fn deserialize_register_command_generic(data: &mut dyn Read, direction : Direction) -> Result<RegisterCommand, Error> {
+        let mut read_buf = vec![];
+        let num = data.read_to_end(&mut read_buf).unwrap();
+
+        if &read_buf[0..crate::MAGIC.len()] != crate::MAGIC {
+            return safe_err_return!(format!("wrong Magic number: expected {:?}, got {:?}", crate::MAGIC, &read_buf[0..crate::MAGIC.len()]));
+        }
+
+        match (direction, read_buf[crate::MSG_OFFSET]) {
+            (Direction::Request, crate::MSG_READ) => {
+                if num != 24 {
+                    return safe_err_return!(format!("mismatched message size, expected {}, got {}", 24, num));
+                }
+                // TODO
+            },
+            (Direction::Request, crate::MSG_WRITE) => {
+                if num != 24 + 4096 {
+                    return safe_err_return!(format!("mismatched message size, expected {}, got {}", 24 + 4096, num));
+                }
+                // TODO
+            },
+            (Direction::ReadResponse(_), crate::MSG_READ)  => {
+                if num != 24 + 4096 {
+                    return safe_err_return!(format!("mismatched message size, expected {}, got {}", 24 + 4096, num));
+                }
+                // TODO
+            },
+            (Direction::WriteResponse, crate::MSG_WRITE)   => {
+                if num != 24 {
+                    return safe_err_return!(format!("mismatched message size, expected {}, got {}", 24, num));
+                }
+                // TODO
+            },
+            (dir, msg_type)   => {
+                return safe_err_return!(format!("internal error, wrong configuration: ({:?}, {})", dir, msg_type));
+            },
+        }
+        
+        
+        unimplemented!()
+    }
+
 
     fn serialize_register_command_generic(
         cmd: &RegisterCommand,
@@ -123,6 +174,9 @@ use crate::RegisterCommand;
                         }
                         if let Direction::ReadResponse(data) = direction {
                             let SectorVec(data) = data;
+                            if data.len() != 4096 {
+                                log::error!("malformed SectorVec! data length should be 4096, not {}", data.len());
+                            }
                             safe_unwrap!(separable_part.write_all(&data));
                         }
                     },
@@ -132,6 +186,9 @@ use crate::RegisterCommand;
                         if let Direction::Request = direction {
                             safe_unwrap!(separable_part.write_all(&sector_idx.to_be_bytes()));
                             let SectorVec(data) = data;
+                            if data.len() != 4096 {
+                                log::error!("malformed SectorVec! data length should be 4096, not {}", data.len());
+                            }
                             safe_unwrap!(separable_part.write_all(&data));
                         }
                     }
@@ -152,7 +209,7 @@ use crate::RegisterCommand;
                 unimplemented!()
             },
         }
-        unimplemented!()
+        Ok(())
     }
 
     pub fn serialize_register_command(

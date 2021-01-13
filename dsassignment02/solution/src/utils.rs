@@ -1,6 +1,9 @@
 #[macro_use]
 pub mod utils {
 
+use std::io::Error;
+use std::io::ErrorKind;
+
 #[macro_export]
 macro_rules! safe_unwrap {
     ($x:expr) => {
@@ -10,5 +13,16 @@ macro_rules! safe_unwrap {
         }
     
     }
+}
+
+#[macro_export]
+macro_rules! safe_err_return {
+    ( $msg_str:expr ) => {
+        {
+            log::error!("{} in {} [{}:{}:{}]", $msg_str, module_path!(), file!(), line!(), column!());
+            Err(std::io::Error::from(std::io::ErrorKind::Other{}))
+        }
+        
+    };
 }
 }

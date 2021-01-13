@@ -8,7 +8,7 @@ use std::io::Read;
 use std::fs::File;
 #[test]
 #[timeout(200)]
-fn match_all() {
+fn match_all_serialize() {
     // those are fixed
     let request_identifier : u64 = 0xdeadbeef;
     let sector_idx : u64 = 0x1;
