@@ -4,8 +4,11 @@ use assignment_2_solution::{
 };
 use ntest::timeout;
 use std::io::BufWriter;
+use std::io::BufReader;
 use std::io::Read;
 use std::fs::File;
+use std::io::Cursor;
+
 #[test]
 #[timeout(200)]
 fn match_all_serialize() {
@@ -54,4 +57,11 @@ fn match_all_serialize() {
 
     assert_eq!(read_writer, read_writer_ref);
     assert_eq!(write_writer, write_writer_ref);
+
+    // serialization tested - now deserialize..
+    let write_cmd_deserialized = deserialize_register_command(&mut BufReader::new(Cursor::new(write_writer))).unwrap();
+    let read_cmd_deserialized = deserialize_register_command(&mut BufReader::new(Cursor::new(read_writer))).unwrap();
+
+    assert_eq!(write_cmd_deserialized, register_cmd_write);
+    assert_eq!(read_cmd_deserialized, register_cmd_read);
 }

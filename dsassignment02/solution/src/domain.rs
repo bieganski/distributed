@@ -30,7 +30,7 @@ pub struct SectorVec(pub Vec<u8>);
 
 pub type SectorIdx = u64;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RegisterCommand {
     Client(ClientRegisterCommand),
     System(SystemRegisterCommand),
@@ -49,19 +49,19 @@ pub enum StatusCode {
     InvalidSectorIndex,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ClientRegisterCommand {
     pub header: ClientCommandHeader,
     pub content: ClientRegisterCommandContent,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SystemRegisterCommand {
     pub header: SystemCommandHeader,
     pub content: SystemRegisterCommandContent,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SystemRegisterCommandContent {
     ReadProc,
     Value {
@@ -77,19 +77,19 @@ pub enum SystemRegisterCommandContent {
     Ack,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ClientRegisterCommandContent {
     Read,
     Write { data: SectorVec },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct ClientCommandHeader {
     pub request_identifier: u64,
     pub sector_idx: SectorIdx,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SystemCommandHeader {
     pub process_identifier: u8,
     pub msg_ident: Uuid,

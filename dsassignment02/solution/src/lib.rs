@@ -82,21 +82,27 @@ const RESPONSE_MSG_TYPE_ADD : u8 = 0x40;
 const MSG_READ : u8 = 0x1;
 const MSG_WRITE : u8 = 0x2;
 
+const REQ_NUM_OFFSET : usize = 8;
+const SECTOR_IDX_OFFSET : usize = 16;
+const HDR_SIZE : usize = 24;
+const BLOCK_SIZE : usize = 4096;
+
 /// Your internal representation of RegisterCommand for ser/de can be anything you want,
 /// we just would like some hooks into your solution to asses where the problem is, should
 /// there be a problem.
 pub mod transfer_public {
     use crate::domain::SectorVec;
-use crate::RegisterCommand;
+    use crate::RegisterCommand;
     use crate::MAGIC;
     use crate::ClientRegisterCommand;
     use crate::ClientCommandHeader;
     use crate::ClientRegisterCommandContent;
     use crate::utils;
+    use std::convert::TryInto;
     use std::io::{Error, Read, Write, BufWriter, Cursor};
 
 
-    #[derive(Debug)]
+    #[derive(Debug, PartialEq)]
     pub enum Direction {
         Request,
         ReadResponse(SectorVec),
@@ -116,38 +122,36 @@ use crate::RegisterCommand;
             return safe_err_return!(format!("wrong Magic number: expected {:?}, got {:?}", crate::MAGIC, &read_buf[0..crate::MAGIC.len()]));
         }
 
-        match (direction, read_buf[crate::MSG_OFFSET]) {
-            (Direction::Request, crate::MSG_READ) => {
-                if num != 24 {
-                    return safe_err_return!(format!("mismatched message size, expected {}, got {}", 24, num));
+        // response not supported for now
+        assert_eq!(direction, Direction::Request{});
+
+        if direction == Direction::Request {
+            let content = if (read_buf[crate::MSG_OFFSET] & 0x1) != 0 {
+                if num != crate::HDR_SIZE {
+                    return safe_err_return!(format!("mismatched message size, expected {}, got {}", crate::HDR_SIZE, num))
                 }
-                // TODO
-            },
-            (Direction::Request, crate::MSG_WRITE) => {
-                if num != 24 + 4096 {
-                    return safe_err_return!(format!("mismatched message size, expected {}, got {}", 24 + 4096, num));
+                ClientRegisterCommandContent::Read{}
+            } else {
+                if num != crate::HDR_SIZE + crate::BLOCK_SIZE {
+                    return safe_err_return!(format!("mismatched message size, expected {}, got {}", crate::HDR_SIZE + crate::BLOCK_SIZE, num))
                 }
-                // TODO
-            },
-            (Direction::ReadResponse(_), crate::MSG_READ)  => {
-                if num != 24 + 4096 {
-                    return safe_err_return!(format!("mismatched message size, expected {}, got {}", 24 + 4096, num));
-                }
-                // TODO
-            },
-            (Direction::WriteResponse, crate::MSG_WRITE)   => {
-                if num != 24 {
-                    return safe_err_return!(format!("mismatched message size, expected {}, got {}", 24, num));
-                }
-                // TODO
-            },
-            (dir, msg_type)   => {
-                return safe_err_return!(format!("internal error, wrong configuration: ({:?}, {})", dir, msg_type));
-            },
+                ClientRegisterCommandContent::Write{data: SectorVec((
+                    &read_buf[crate::HDR_SIZE..]).to_vec()
+                )}
+            };
+
+            let header = ClientCommandHeader {
+                request_identifier: u64::from_be_bytes(read_buf[crate::REQ_NUM_OFFSET..crate::REQ_NUM_OFFSET+8].try_into().expect("internal error")),
+                sector_idx: u64::from_be_bytes(read_buf[crate::SECTOR_IDX_OFFSET..crate::SECTOR_IDX_OFFSET+8].try_into().expect("internal error")) as crate::domain::SectorIdx,
+            };
+
+            Ok(RegisterCommand::Client(ClientRegisterCommand{
+                header,
+                content,
+            }))
+        } else {
+            unimplemented!()
         }
-        
-        
-        unimplemented!()
     }
 
 
