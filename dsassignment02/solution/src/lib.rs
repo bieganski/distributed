@@ -15,6 +15,10 @@ pub async fn run_register_process(config: Configuration) {
 }
 
 pub mod atomic_register_public {
+    use crate::domain::SectorVec;
+    use std::collections::HashSet;
+    use std::collections::HashMap;
+
     use crate::{
         ClientRegisterCommand, OperationComplete, RegisterClient, SectorsManager, StableStorage,
         SystemRegisterCommand,
@@ -47,7 +51,147 @@ pub mod atomic_register_public {
         sectors_manager: Arc<dyn SectorsManager>,
         processes_count: usize,
     ) -> (Box<dyn AtomicRegister>, Option<ClientRegisterCommand>) {
-        unimplemented!()
+        // TODO that None below handling
+        let state = SystemNodeState{
+            ts: Ts(0),
+            wr: Rank(self_ident),
+            writeval: SectorVec(Vec::new()),
+            rid: ReadId(0),
+            readlist: HashMap::<Rank, (Ts, Rank, ReadId)>::new(),
+            acklist: HashSet::<Rank>::new(),
+            reading: false,
+            writing: false,
+        };
+        (Box::new(BasicAtomicRegister{self_id: Rank(self_ident), state, metadata, register_client, sectors_manager, processes_count}), None)
+    }
+
+    // timestamp
+    #[derive(Debug)]
+    struct Ts(u64);
+
+    // id of read operation
+    #[derive(Copy, Clone, Debug)]
+    struct ReadId(u64);
+
+    // process (and 'wr', at most 'rank')
+    #[derive(Debug)]
+    struct Rank(u8);
+
+    // impl std::ops::Add<u64> for ReadId {
+    //     type Output = ReadId;
+    
+    //     fn add(self, rhs: u64) -> ReadId {
+    //         ReadId(self.0 + rhs)
+    //     }
+    // }
+
+    impl std::ops::AddAssign<u64> for ReadId {
+        fn add_assign(&mut self, rhs: u64) {
+            self.0 += rhs;
+        }
+    }
+
+    struct SystemNodeState {
+        ts: Ts,
+        wr: Rank,
+        writeval: SectorVec,
+        rid: ReadId,
+        readlist: HashMap<Rank, (Ts, Rank, ReadId)>,
+        acklist: HashSet<Rank>,
+        reading: bool,
+        writing: bool,
+    }
+
+    struct BasicAtomicRegister {
+        metadata: Box<dyn StableStorage>,
+        register_client: Arc<dyn RegisterClient>,
+        sectors_manager: Arc<dyn SectorsManager>,
+        processes_count: usize,
+        state: SystemNodeState,
+        self_id: Rank,
+    }
+
+    use crate::ClientRegisterCommandContent;
+    use crate::SystemCommandHeader;
+    use crate::SystemRegisterCommandContent;
+    use std::convert::TryInto;
+    
+    #[macro_use]
+    use crate::utils;
+
+    #[async_trait::async_trait]
+    impl AtomicRegister for BasicAtomicRegister {
+        async fn client_command(
+            &mut self,
+            cmd: ClientRegisterCommand,
+            operation_complete: Box<dyn FnOnce(OperationComplete) + Send + Sync>) {
+                match cmd.content {
+                    ClientRegisterCommandContent::Read => {
+                        // rid := rid + 1;
+                        // store(rid);
+                        // readlist := [ _ ] `of length` N;
+                        // acklist := [ _ ] `of length` N;
+                        // reading := TRUE;
+                        // trigger < sbeb, Broadcast | [READ_PROC, rid] >;
+                        self.state.rid += 1; // TOOD maybe += 'processes_count'?
+                        safe_unwrap!(self.metadata.put("rid", &self.state.rid.0.to_ne_bytes()));
+                        self.state.readlist.drain();
+                        self.state.acklist.drain();
+                        self.state.reading = true;
+                        self.state.writing = false; // TODO remove?
+                        self.register_client.broadcast(crate::Broadcast{
+                            cmd: Arc::new(SystemRegisterCommand{
+                                 header: SystemCommandHeader{
+                                     process_identifier: self.self_id.0,
+                                     msg_ident: uuid::Uuid::new_v4(),
+                                     read_ident: self.state.rid.0,
+                                     sector_idx: cmd.header.sector_idx, 
+                                 },
+                                 content: SystemRegisterCommandContent::ReadProc{}
+                            })
+                        });
+                    },
+                    ClientRegisterCommandContent::Write{data} => {
+                        // rid := rid + 1;
+                        // writeval := v;
+                        // acklist := [ _ ] `of length` N;
+                        // readlist := [ _ ] `of length` N;
+                        // writing := TRUE;
+                        // store(wr, ts, rid, writeval, writing);
+                        // trigger < sbeb, Broadcast | [READ_PROC, rid] >;
+                        self.state.rid += 1;
+                        self.state.writeval = data;
+                        self.state.readlist.drain();
+                        self.state.acklist.drain();
+                        self.state.writing = true;
+                        self.state.reading = false; // TODO remove?
+                        vec![
+                            self.metadata.put("wr",  &self.state.wr.0.to_ne_bytes()),
+                            self.metadata.put("ts", &self.state.ts.0.to_ne_bytes()),
+                            self.metadata.put("rid", &self.state.rid.0.to_ne_bytes()),
+                            self.metadata.put("writeval", &self.state.writeval.0),
+                            self.metadata.put("writing", &bincode::serialize(&self.state.writing).unwrap()),
+                        ].into_iter().for_each(|x| {safe_unwrap!(x)});
+
+                        self.register_client.broadcast(crate::Broadcast{
+                            cmd: Arc::new(SystemRegisterCommand{
+                                 header: SystemCommandHeader{
+                                     process_identifier: self.self_id.0,
+                                     msg_ident: uuid::Uuid::new_v4(),
+                                     read_ident: self.state.rid.0,
+                                     sector_idx: cmd.header.sector_idx, 
+                                 },
+                                 content: SystemRegisterCommandContent::ReadProc{}
+                            })
+                        });
+
+                    },
+                }
+            }
+
+        async fn system_command(&mut self, cmd: SystemRegisterCommand) {
+            unimplemented!()
+        }
     }
 }
 
@@ -56,14 +200,10 @@ pub mod sectors_manager_public {
     use crate::{SectorIdx, SectorVec};
     use std::path::PathBuf;
     use std::io::SeekFrom;
-    use std::path::Path;
-    use tokio::task;
-    use tokio::fs::File;
     use tokio::fs::OpenOptions;
     use tokio::prelude::*;
     // use std::thread::JoinHandle;
     // use tokio::runtime::{Builder, Runtime};
-    use serde::{Deserialize, Serialize};
     use bincode;
 
     // use tokio::prelude::Future;
@@ -148,11 +288,12 @@ pub mod sectors_manager_public {
                 Ok(mut file) => {
                     file.seek(SeekFrom::Start(4096)).await.unwrap();
                     file.read_to_end(&mut res).await.unwrap();
+                    bincode::deserialize(&res).unwrap()
                 },
-                Err(_) => {},
+                Err(_) => {
+                    (0_u64, 0_u8)
+                },
             }
-
-            bincode::deserialize(&res).unwrap()
         }
 
         async fn read_data(&self, idx: SectorIdx) -> SectorVec {
