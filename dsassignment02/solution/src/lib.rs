@@ -55,18 +55,21 @@ pub mod atomic_register_public {
         let state = SystemNodeState{
             ts: Ts(0),
             wr: Rank(self_ident),
+            val: SectorVec(Vec::new()),
             writeval: SectorVec(Vec::new()),
+            readval: SectorVec(Vec::new()),
             rid: ReadId(0),
-            readlist: HashMap::<Rank, (Ts, Rank, ReadId)>::new(),
+            readlist: HashMap::<Rank, (Ts, Rank, SectorVec)>::new(),
             acklist: HashSet::<Rank>::new(),
             reading: false,
             writing: false,
+            operation_complete: None,
         };
         (Box::new(BasicAtomicRegister{self_id: Rank(self_ident), state, metadata, register_client, sectors_manager, processes_count}), None)
     }
 
     // timestamp
-    #[derive(Debug)]
+    #[derive(Debug, Clone, Copy)]
     struct Ts(u64);
 
     // id of read operation
@@ -74,7 +77,7 @@ pub mod atomic_register_public {
     struct ReadId(u64);
 
     // process (and 'wr', at most 'rank')
-    #[derive(Debug)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     struct Rank(u8);
 
     // impl std::ops::Add<u64> for ReadId {
@@ -95,11 +98,14 @@ pub mod atomic_register_public {
         ts: Ts,
         wr: Rank,
         writeval: SectorVec,
+        readval: SectorVec,
+        val: SectorVec,
         rid: ReadId,
-        readlist: HashMap<Rank, (Ts, Rank, ReadId)>,
+        readlist: HashMap<Rank, (Ts, Rank, SectorVec)>,
         acklist: HashSet<Rank>,
         reading: bool,
         writing: bool,
+        operation_complete: Option<Box<dyn FnOnce(OperationComplete) + Send + Sync>>,
     }
 
     struct BasicAtomicRegister {
@@ -115,9 +121,24 @@ pub mod atomic_register_public {
     use crate::SystemCommandHeader;
     use crate::SystemRegisterCommandContent;
     use std::convert::TryInto;
-    
-    #[macro_use]
-    use crate::utils;
+    use log;
+
+    impl BasicAtomicRegister {
+        fn highest(&self) -> Rank {
+
+            let mut max = (Ts(0), Rank(0));
+            let mut max_id = Rank(0);
+            for (key, (ts, wr, _)) in &self.state.readlist { //}.iter() {
+                if (ts.0, wr.0) > ((max.0).0, (max.1).0) {
+                    max_id = Rank(key.0);
+                    max = (*ts, *wr)
+                }
+            }
+            log::info!("[highest]: found max for {}", max_id.0);
+            assert_ne!(0, max_id.0);
+            max_id
+        }
+    }
 
     #[async_trait::async_trait]
     impl AtomicRegister for BasicAtomicRegister {
@@ -125,8 +146,10 @@ pub mod atomic_register_public {
             &mut self,
             cmd: ClientRegisterCommand,
             operation_complete: Box<dyn FnOnce(OperationComplete) + Send + Sync>) {
+                self.state.operation_complete = Some(operation_complete);
                 match cmd.content {
                     ClientRegisterCommandContent::Read => {
+                        log::info!("[client_command] captured Client Read (from {})", self.self_id.0);
                         // rid := rid + 1;
                         // store(rid);
                         // readlist := [ _ ] `of length` N;
@@ -134,11 +157,12 @@ pub mod atomic_register_public {
                         // reading := TRUE;
                         // trigger < sbeb, Broadcast | [READ_PROC, rid] >;
                         self.state.rid += 1; // TOOD maybe += 'processes_count'?
-                        safe_unwrap!(self.metadata.put("rid", &self.state.rid.0.to_ne_bytes()));
+                        safe_unwrap!(self.metadata.put("rid", &self.state.rid.0.to_ne_bytes()).await);
                         self.state.readlist.drain();
                         self.state.acklist.drain();
                         self.state.reading = true;
-                        self.state.writing = false; // TODO remove?
+                        assert_eq!(self.state.writing, false);
+                        log::info!("[client_command][client-system] sending broadcast ReadProc (from {})", self.self_id.0);
                         self.register_client.broadcast(crate::Broadcast{
                             cmd: Arc::new(SystemRegisterCommand{
                                  header: SystemCommandHeader{
@@ -149,9 +173,10 @@ pub mod atomic_register_public {
                                  },
                                  content: SystemRegisterCommandContent::ReadProc{}
                             })
-                        });
+                        }).await;
                     },
                     ClientRegisterCommandContent::Write{data} => {
+                        log::info!("[client_command] captured Client Write (from {})", self.self_id.0);
                         // rid := rid + 1;
                         // writeval := v;
                         // acklist := [ _ ] `of length` N;
@@ -164,33 +189,171 @@ pub mod atomic_register_public {
                         self.state.readlist.drain();
                         self.state.acklist.drain();
                         self.state.writing = true;
-                        self.state.reading = false; // TODO remove?
+                        assert_eq!(self.state.reading, false);
                         vec![
-                            self.metadata.put("wr",  &self.state.wr.0.to_ne_bytes()),
-                            self.metadata.put("ts", &self.state.ts.0.to_ne_bytes()),
-                            self.metadata.put("rid", &self.state.rid.0.to_ne_bytes()),
-                            self.metadata.put("writeval", &self.state.writeval.0),
-                            self.metadata.put("writing", &bincode::serialize(&self.state.writing).unwrap()),
+                            self.metadata.put("wr",  &self.state.wr.0.to_ne_bytes()).await,
+                            self.metadata.put("ts", &self.state.ts.0.to_ne_bytes()).await,
+                            self.metadata.put("rid", &self.state.rid.0.to_ne_bytes()).await,
+                            self.metadata.put("writeval", &self.state.writeval.0).await,
+                            self.metadata.put("writing", &bincode::serialize(&self.state.writing).unwrap()).await,
                         ].into_iter().for_each(|x| {safe_unwrap!(x)});
 
+                        log::info!("[client_command][client-system] sending broadcast ReadProc (from {})", self.self_id.0);
                         self.register_client.broadcast(crate::Broadcast{
                             cmd: Arc::new(SystemRegisterCommand{
                                  header: SystemCommandHeader{
-                                     process_identifier: self.self_id.0,
-                                     msg_ident: uuid::Uuid::new_v4(),
-                                     read_ident: self.state.rid.0,
-                                     sector_idx: cmd.header.sector_idx, 
+                                    process_identifier: self.self_id.0,
+                                    msg_ident: uuid::Uuid::new_v4(),
+                                    read_ident: self.state.rid.0,
+                                    sector_idx: cmd.header.sector_idx, 
                                  },
                                  content: SystemRegisterCommandContent::ReadProc{}
                             })
-                        });
-
+                        }).await;
                     },
                 }
             }
 
         async fn system_command(&mut self, cmd: SystemRegisterCommand) {
-            unimplemented!()
+            let response_header =  SystemCommandHeader {
+                process_identifier: self.self_id.0,
+                ..cmd.header
+            };
+
+
+            // TODO tu jestem
+            // * brak wysyłania send/bcast niżej
+            // * brak obsługi wielu sektorów - co ze zmienną val?
+            
+            match cmd.content {
+                SystemRegisterCommandContent::ReadProc => {
+                    log::info!("[{}][system_command] captured ReadProc from {}", self.self_id.0, cmd.header.process_identifier);
+                    // trigger < pl, Send | p, [VALUE, r, ts, wr, val] >;
+                    self.register_client.send(crate::Send{
+                        target: cmd.header.process_identifier as usize, // TODO u8 cast
+                        cmd: Arc::new(SystemRegisterCommand {
+                            header: response_header.clone(),
+                            content: SystemRegisterCommandContent::Value {
+                                timestamp: self.state.ts.0,
+                                write_rank: self.state.wr.0,
+                                sector_data: self.state.val.clone(),
+                            },
+                        })
+                    }).await;
+                },
+                SystemRegisterCommandContent::Value{timestamp, write_rank, sector_data} => {
+                    log::info!("[{}][system_command] captured Value from {}", self.self_id.0, cmd.header.process_identifier);
+                    if cmd.header.read_ident != self.state.rid.0 {
+                        return ();
+                    }
+                    assert_eq!(!false && false, false); // TODO operator priority check
+                    if !self.state.reading && !self.state.writing {
+                        log::error!("TODO REMOVE ME: test error!: got Value when not performed any action");
+                        return ();
+                    }
+
+                    let ts = Ts(timestamp);
+                    let wr = Rank(write_rank);
+                    self.state.readlist.insert(Rank(cmd.header.process_identifier), (ts, wr, sector_data));
+
+                    if (self.state.readlist.len() <= self.processes_count / 2) {
+                        return ();
+                    }
+
+                    let (maxts, rr, readval) = self.state.readlist.remove(&(self.highest())).unwrap();
+                    self.state.readval = readval;
+                    self.state.readlist.drain();
+                    self.state.acklist.drain();
+
+                    // upon event <sl, Deliver | q, [VALUE, r, ts', wr', v'] > such that r == rid do
+                    // readlist[q] := (ts', wr', v');
+                    // if #(readlist) > N / 2 and (reading or writing) then
+                        // (maxts, rr, readval) := highest(readlist);
+                        // readlist := [ _ ] `of length` N;
+                        // acklist := [ _ ] `of length` N;
+                        // if reading = TRUE then
+                        //     trigger < sbeb, Broadcast | [WRITE_PROC, rid, maxts, rr, readval] >;
+                        // else
+                        //     trigger < sbeb, Broadcast | [WRITE_PROC, rid, maxts + 1, rank(self), writeval] >;
+
+
+                    if self.state.reading {
+                        self.register_client.broadcast(crate::Broadcast{
+                            cmd: Arc::new(SystemRegisterCommand{
+                                    header: response_header.clone(),
+                                    content: SystemRegisterCommandContent::WriteProc{
+                                        timestamp: maxts.0,
+                                        write_rank: rr.0,
+                                        data_to_write: self.state.readval.clone(),
+                                    }
+                            })
+                        }).await;
+                    } else {
+                        self.register_client.broadcast(crate::Broadcast{
+                            cmd: Arc::new(SystemRegisterCommand{
+                                    header: response_header.clone(),
+                                    content: SystemRegisterCommandContent::WriteProc{
+                                        timestamp: maxts.0 + 1,
+                                        write_rank: self.self_id.0,
+                                        data_to_write: self.state.writeval.clone(),
+                                    }
+                            })
+                        }).await;
+                    }
+                },
+                SystemRegisterCommandContent::WriteProc{timestamp, write_rank, data_to_write} => {
+                    log::info!("[{}][system_command] captured WriteProc from {}", self.self_id.0, cmd.header.process_identifier);
+                    // upon event < sbeb, Deliver | p, [WRITE_PROC, r, ts', wr', v'] > do
+                    // if (ts', wr') > (ts, wr) then
+                    //     (ts, wr, val) := (ts', wr', v');
+                    //     store(ts, wr, val);
+                    // trigger < pl, Send | p, [ACK, r] >;
+
+                    if (timestamp, write_rank) > (self.state.ts.0, self.state.wr.0) {
+                        self.state.ts = Ts(timestamp);
+                        self.state.wr = Rank(write_rank);
+                        self.state.val = data_to_write;
+
+                        vec![
+                            self.metadata.put("wr",  &self.state.wr.0.to_ne_bytes()).await,
+                            self.metadata.put("ts", &self.state.ts.0.to_ne_bytes()).await,
+                            self.metadata.put("val", &self.state.val.0).await,
+                        ].into_iter().for_each(|x| {safe_unwrap!(x)});
+                    }
+                },
+                SystemRegisterCommandContent::Ack => {
+                    log::info!("[{}][system_command] captured Ack from {}", self.self_id.0, cmd.header.process_identifier);
+                    if cmd.header.read_ident != self.state.rid.0 {
+                        return ();
+                    }
+                    self.state.acklist.insert(Rank(cmd.header.process_identifier));
+                    if self.state.reading && self.state.writing {
+                        log::error!("internal error: reading and writing simulataneously!");
+                    }
+                    if (self.state.acklist.len() <= self.processes_count / 2) || !(self.state.reading || self.state.writing) {
+                        return ();
+                    }
+                    self.state.acklist.drain();
+
+                    if self.state.reading {
+                        self.state.reading = false;
+                    } else {
+                        // writing
+                        self.state.writing = false;
+                    }
+                    // upon event < pl, Deliver | q, [ACK, r] > such that r == rid do
+                    // acklist[q] := Ack;
+                    // if #(acklist) > N / 2 and (reading or writing) then
+                    //     acklist := [ _ ] `of length` N;
+                    //     if reading = TRUE then
+                    //         reading := FALSE;
+                    //         trigger < nnar, ReadReturn | readval >;
+                    //     else
+                    //         writing := FALSE;
+                    //         store(writing);
+                    //         trigger < nnar, WriteReturn >;
+                },
+            }
         }
     }
 }
