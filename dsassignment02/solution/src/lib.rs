@@ -58,7 +58,7 @@ pub mod atomic_register_public {
             val: SectorVec(Vec::new()),
             writeval: SectorVec(Vec::new()),
             readval: SectorVec(Vec::new()),
-            rid: ReadId(0),
+            rid: RequestId(0),
             readlist: HashMap::<Rank, (Ts, Rank, SectorVec)>::new(),
             acklist: HashSet::<Rank>::new(),
             reading: false,
@@ -74,21 +74,21 @@ pub mod atomic_register_public {
 
     // id of read operation
     #[derive(Copy, Clone, Debug)]
-    struct ReadId(u64);
+    struct RequestId(u64);
 
     // process (and 'wr', at most 'rank')
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     struct Rank(u8);
 
-    // impl std::ops::Add<u64> for ReadId {
-    //     type Output = ReadId;
+    // impl std::ops::Add<u64> for RequestId {
+    //     type Output = RequestId;
     
-    //     fn add(self, rhs: u64) -> ReadId {
-    //         ReadId(self.0 + rhs)
+    //     fn add(self, rhs: u64) -> RequestId {
+    //         RequestId(self.0 + rhs)
     //     }
     // }
 
-    impl std::ops::AddAssign<u64> for ReadId {
+    impl std::ops::AddAssign<u64> for RequestId {
         fn add_assign(&mut self, rhs: u64) {
             self.0 += rhs;
         }
@@ -100,7 +100,7 @@ pub mod atomic_register_public {
         writeval: SectorVec,
         readval: SectorVec,
         val: SectorVec,
-        rid: ReadId,
+        rid: RequestId,
         readlist: HashMap<Rank, (Ts, Rank, SectorVec)>,
         acklist: HashSet<Rank>,
         reading: bool,
@@ -120,7 +120,9 @@ pub mod atomic_register_public {
     use crate::ClientRegisterCommandContent;
     use crate::SystemCommandHeader;
     use crate::SystemRegisterCommandContent;
-    use std::convert::TryInto;
+    use crate::OperationReturn;
+    use crate::StatusCode;
+    use crate::ReadReturn;
     use log;
 
     impl BasicAtomicRegister {
@@ -220,11 +222,9 @@ pub mod atomic_register_public {
                 ..cmd.header
             };
 
-
             // TODO tu jestem
-            // * brak wysyłania send/bcast niżej
             // * brak obsługi wielu sektorów - co ze zmienną val?
-            
+            // * store val, writeval
             match cmd.content {
                 SystemRegisterCommandContent::ReadProc => {
                     log::info!("[{}][system_command] captured ReadProc from {}", self.self_id.0, cmd.header.process_identifier);
@@ -320,8 +320,26 @@ pub mod atomic_register_public {
                             self.metadata.put("val", &self.state.val.0).await,
                         ].into_iter().for_each(|x| {safe_unwrap!(x)});
                     }
+                    self.register_client.send(crate::Send{
+                        target: cmd.header.process_identifier as usize, // TODO u8 cast
+                        cmd: Arc::new(SystemRegisterCommand {
+                            header: response_header.clone(),
+                            content: SystemRegisterCommandContent::Ack{},
+                        })
+                    }).await;
                 },
                 SystemRegisterCommandContent::Ack => {
+                    // upon event < pl, Deliver | q, [ACK, r] > such that r == rid do
+                    // acklist[q] := Ack;
+                    // if #(acklist) > N / 2 and (reading or writing) then
+                    //     acklist := [ _ ] `of length` N;
+                    //     if reading = TRUE then
+                    //         reading := FALSE;
+                    //         trigger < nnar, ReadReturn | readval >;
+                    //     else
+                    //         writing := FALSE;
+                    //         store(writing);
+                    //         trigger < nnar, WriteReturn >;
                     log::info!("[{}][system_command] captured Ack from {}", self.self_id.0, cmd.header.process_identifier);
                     if cmd.header.read_ident != self.state.rid.0 {
                         return ();
@@ -335,23 +353,25 @@ pub mod atomic_register_public {
                     }
                     self.state.acklist.drain();
 
+                    let op_return : crate::domain::OperationReturn;
                     if self.state.reading {
                         self.state.reading = false;
+                        op_return = OperationReturn::Read(ReadReturn{read_data: Some(self.state.readval.clone())});
                     } else {
                         // writing
                         self.state.writing = false;
+                        op_return = OperationReturn::Write;
                     }
-                    // upon event < pl, Deliver | q, [ACK, r] > such that r == rid do
-                    // acklist[q] := Ack;
-                    // if #(acklist) > N / 2 and (reading or writing) then
-                    //     acklist := [ _ ] `of length` N;
-                    //     if reading = TRUE then
-                    //         reading := FALSE;
-                    //         trigger < nnar, ReadReturn | readval >;
-                    //     else
-                    //         writing := FALSE;
-                    //         store(writing);
-                    //         trigger < nnar, WriteReturn >;
+
+                    // that's bad I know
+                    let op_complete = None;
+                    let op_complete = std::mem::replace(&mut self.state.operation_complete, op_complete);
+                    
+                    (op_complete.unwrap())(OperationComplete{
+                        status_code: StatusCode::Ok,
+                        request_identifier: self.state.rid.0,
+                        op_return,
+                    });
                 },
             }
         }
