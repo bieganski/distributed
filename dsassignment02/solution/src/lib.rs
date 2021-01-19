@@ -9,11 +9,11 @@ pub use register_client_public::*;
 pub use sectors_manager_public::*;
 pub use stable_storage_public::*;
 pub use transfer_public::*;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use std::io::BufReader;
-use std::io::Cursor;
+use tokio::net::TcpListener;
+use tokio::io::AsyncReadExt;
 use std::io::Read;
+use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
 
 
 // Hmac uses also sha2 crate.
@@ -23,6 +23,25 @@ use sha2::Sha256;
 use log;
 
 static HMAC_TAG_SIZE: usize = 32;
+
+#[derive(Clone, Default)]
+struct SramStableStorage {
+    map: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+}
+
+#[async_trait::async_trait]
+impl StableStorage for SramStableStorage {
+    async fn put(&mut self, key: &str, value: &[u8]) -> Result<(), String> {
+        let mut map = self.map.lock().unwrap();
+        map.insert(key.to_owned(), value.to_vec());
+        Ok(())
+    }
+
+    async fn get(&self, key: &str) -> Option<Vec<u8>> {
+        let map = self.map.lock().unwrap();
+        map.get(key).map(Clone::clone)
+    }
+}
 
 
 pub async fn run_register_process(config: Configuration) {
@@ -42,6 +61,15 @@ pub async fn run_register_process(config: Configuration) {
         .unwrap();
 
     let (mut stream, _) = listener.accept().await.unwrap();
+
+    let (mut register, pending_cmd) = build_atomic_register(
+        1,
+        Box::new(SramStableStorage::default()),
+        Arc::new(BasicRegisterClient::new(config.public.tcp_locations.clone())),
+        build_sectors_manager(config.public.storage_dir),
+        1,
+    )
+    .await;
 
     let mut header = [0_u8; 8];
     let mut read_content : &mut Vec<u8> = &mut vec![0_u8; 16]; // req. nr. + sector idx + cmd content + HMAC
@@ -96,7 +124,18 @@ pub async fn run_register_process(config: Configuration) {
         match deserialize_register_command(&mut buf) {
             Ok(reg_cmd) => {
                 log::info!("[run_register_process] message parsed successfully");
+                match reg_cmd {
+                    RegisterCommand::Client(cmd) => {
+                        if cmd.header.sector_idx >= config.public.max_sector {
+                            log::error!("[run_register_process] Too high sector_idx requested! Max is {}, Requested: {}", cmd.header.sector_idx, config.public.max_sector);
+                            // TODO response
+                        }
 
+                    },
+                    RegisterCommand::System(cmd) => {
+
+                    },
+                }
             },
             Err(_) => {
                 log::error!("[run_register_process] message parsing failed!");
@@ -105,7 +144,6 @@ pub async fn run_register_process(config: Configuration) {
         }
 
     } // loop
-    unimplemented!()
 }
 
 pub mod atomic_register_public {
@@ -730,8 +768,13 @@ pub mod transfer_public {
 }
 
 pub mod register_client_public {
-    use crate::SystemRegisterCommand;
+    use crate::transfer_public::serialize_register_command;
+use crate::SystemRegisterCommand;
     use std::sync::Arc;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpStream;
+    use crate::domain::RegisterCommand;
+    use std::time::Duration;
 
     #[async_trait::async_trait]
     /// We do not need any public implementation of this trait. It is there for use
@@ -753,6 +796,63 @@ pub mod register_client_public {
         pub cmd: Arc<SystemRegisterCommand>,
         /// Identifier of the target process. Those start at 1.
         pub target: usize,
+    }
+
+    pub struct BasicRegisterClient {
+        tcp_locations: Vec<(String, u16)>,
+    }
+
+    impl BasicRegisterClient {
+        pub fn new(tcp_locations: Vec<(String, u16)>,) -> Self {
+            BasicRegisterClient{
+                tcp_locations,
+            }
+        }
+    }
+
+    // #[async_trait::async_trait]
+    impl BasicRegisterClient {
+        #[allow(dead_code)]
+        const TIMEOUT : Duration = Duration::from_millis(500);
+        
+        async fn serialize(cmd : Arc<SystemRegisterCommand>) ->Vec<u8> {
+            let mut serialized_msg = vec![];
+            safe_unwrap!(
+                serialize_register_command(
+                    &RegisterCommand::System(
+                        (*cmd).clone()), 
+                    &mut serialized_msg)
+            );
+            serialized_msg
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RegisterClient for BasicRegisterClient {
+
+        
+        async fn send(&self, msg: Send) {
+            let serialized_msg = Self::serialize(msg.cmd).await;
+
+            let addr = self.tcp_locations[msg.target - 1].clone();
+            let mut stream = TcpStream::connect(addr.clone())
+                .await
+                .expect(&format!("cannot connect to TCP of target {} (addr: {:?}", msg.target, addr));
+            
+            stream.write_all(&serialized_msg).await.unwrap();
+        }
+
+        async fn broadcast(&self, msg: Broadcast) {
+            let serialized_msg = Self::serialize(msg.cmd).await;
+
+            for addr in self.tcp_locations.iter() {
+                let mut stream = TcpStream::connect(addr.clone())
+                    .await
+                    .expect(&format!("cannot connect to TCP of (addr: {:?}", addr));
+            
+                stream.write_all(&serialized_msg).await.unwrap();
+            }
+        }
     }
 }
 
