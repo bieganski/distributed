@@ -9,8 +9,102 @@ pub use register_client_public::*;
 pub use sectors_manager_public::*;
 pub use stable_storage_public::*;
 pub use transfer_public::*;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::io::BufReader;
+use std::io::Cursor;
+use std::io::Read;
+
+
+// Hmac uses also sha2 crate.
+use hmac::{Hmac, Mac, NewMac};
+use sha2::Sha256;
+
+use log;
+
+static HMAC_TAG_SIZE: usize = 32;
+
 
 pub async fn run_register_process(config: Configuration) {
+    // struct PublicConfiguration {
+    //     /// Storage for durable data.
+    //          storage_dir: PathBuf,
+    //     /// Host and port, indexed by identifiers, of every other process.
+    //          tcp_locations: Vec<(String, u16)>,
+    //     /// Identifier of this process. Identifiers start at 1.
+    //          self_rank: u8,
+    //     /// First NOT supported sector index.
+    //          max_sector: u64,
+    // }
+    let my_addr = &config.public.tcp_locations[config.public.self_rank as usize - 1];
+    let listener = TcpListener::bind(my_addr)
+        .await
+        .unwrap();
+
+    let (mut stream, _) = listener.accept().await.unwrap();
+
+    let mut header = [0_u8; 8];
+    let mut read_content : &mut Vec<u8> = &mut vec![0_u8; 16]; // req. nr. + sector idx + cmd content + HMAC
+    let mut write_content : &mut Vec<u8> = &mut vec![0_u8; 16 + 4096];
+    let mut hmac_signature : &mut Vec<u8> = &mut vec![0_u8; HMAC_TAG_SIZE];
+
+    // aaaa
+    // [208, 113, 246, 189, 248, 159, 121, 131, 174, 124, 11, 29, 85, 232, 232, 192, 251, 145, 248, 98, 22, 173, 198, 87, 250, 129, 106, 138, 60, 63, 144, 192]
+
+    // 5
+    // [208, 44, 139, 113, 235, 130, 112, 216, 61, 51, 205, 224, 101, 27, 220, 123, 244, 158, 170, 150, 137, 97, 254, 144, 2, 103, 175, 53, 114, 29, 36, 174]
+
+    loop {
+        let mut mac = Hmac::<Sha256>::new_varkey(&config.hmac_client_key).expect("HMAC can take key of any size");
+        stream
+            .read_exact(&mut header)
+            .await
+            .expect("Less data then expected");
+    
+        if header[..4] != MAGIC_NUMBER {
+            log::error!("[run_register_process] wrong Magic Number!");
+            continue;
+        }
+
+        if header[7] != 0x1 && header[7] != 0x2 {
+            log::error!("[run_register_process] wrong message type! Got {:?}", header[7]);
+                continue
+        }
+
+        let buf : &mut Vec<u8> = if header[7] == 0x1 {read_content} else {write_content};
+        stream
+            .read_exact(buf)
+            .await
+            .expect("Less data then expected");
+
+        mac.update(&header);
+        mac.update(&buf);
+
+        stream
+            .read_exact(hmac_signature)
+            .await
+            .expect("Less data then expected");
+
+        let mut buf = Read::chain(&header as &[u8], &buf as &[u8]); // .chain(&hmac_signature as &[u8]);
+
+        let proper_mac = mac.finalize().into_bytes();
+
+        if hmac_signature.as_slice() != &*proper_mac {
+            log::error!("wrong HMAC signature! \ngot: {:?}\nexptected: {:?}", hmac_signature.as_slice(), &*proper_mac);
+        }
+
+        match deserialize_register_command(&mut buf) {
+            Ok(reg_cmd) => {
+                log::info!("[run_register_process] message parsed successfully");
+
+            },
+            Err(_) => {
+                log::error!("[run_register_process] message parsing failed!");
+                continue;
+            }
+        }
+
+    } // loop
     unimplemented!()
 }
 
@@ -130,7 +224,7 @@ pub mod atomic_register_public {
 
             let mut max = (Ts(0), Rank(0));
             let mut max_id = Rank(0);
-            for (key, (ts, wr, _)) in &self.state.readlist { //}.iter() {
+            for (key, (ts, wr, _)) in &self.state.readlist {
                 if (ts.0, wr.0) > ((max.0).0, (max.1).0) {
                     max_id = Rank(key.0);
                     max = (*ts, *wr)
@@ -385,13 +479,7 @@ pub mod sectors_manager_public {
     use std::io::SeekFrom;
     use tokio::fs::OpenOptions;
     use tokio::prelude::*;
-    // use std::thread::JoinHandle;
-    // use tokio::runtime::{Builder, Runtime};
     use bincode;
-
-    // use tokio::prelude::Future;
-
-
     
     #[async_trait::async_trait]
     pub trait SectorsManager: Send + Sync {
@@ -409,40 +497,6 @@ pub mod sectors_manager_public {
 
     /// Path parameter points to a directory to which this method has exclusive access.
     pub fn build_sectors_manager(path: PathBuf) -> Arc<dyn SectorsManager> {
-        // unimplemented!()
-        // let task = tokio::fs::create_dir(super::META_DIR);
-            // .and_then(|mut file| file.poll_write(b"hello, world!"))
-            // .map(|res| {
-            //     println!("{:?}", res);
-            // }).map_err(|err| eprintln!("IO error: {:?}", err));
-
-        // tokio::run(task);
-        // let mut path_copy = path.clone();
-        
-        // let task = task::spawn( async move {
-        //     path_copy.push(META_DIR);
-        //     log::error!("path: {:?}", path_copy);
-        //     tokio::fs::create_dir(path_copy.clone()).await.unwrap();
-        //     path_copy.pop();
-        //     path_copy.push(SECTORS_DIR);
-        //     log::error!("path2: {:?}", path_copy);
-        //     tokio::fs::create_dir(path_copy).await.unwrap();
-            // tokio::join!(
-            //     tokio::fs::create_dir(META_DIR),
-            //     tokio::fs::create_dir(SECTORS_DIR),
-            // );
-        // });
-
-        
-
-        // tokio::join!(task);
-        // let single_thread_runtime = Builder::new_current_thread().build().unwrap();
-        // let multi_threaded_runtime = Runtime::new().unwrap();
-
-    // Moving values into async task.
-        // multi_threaded_runtime.block_on(task).unwrap();
-        // log::error!("joined!");
-
         Arc::new(BasicSectorsManager{path})
     }
 
