@@ -45,16 +45,6 @@ impl StableStorage for SramStableStorage {
 
 
 pub async fn run_register_process(config: Configuration) {
-    // struct PublicConfiguration {
-    //     /// Storage for durable data.
-    //          storage_dir: PathBuf,
-    //     /// Host and port, indexed by identifiers, of every other process.
-    //          tcp_locations: Vec<(String, u16)>,
-    //     /// Identifier of this process. Identifiers start at 1.
-    //          self_rank: u8,
-    //     /// First NOT supported sector index.
-    //          max_sector: u64,
-    // }
     let my_addr = &config.public.tcp_locations[config.public.self_rank as usize - 1];
     let listener = TcpListener::bind(my_addr)
         .await
@@ -83,7 +73,6 @@ pub async fn run_register_process(config: Configuration) {
     // [208, 44, 139, 113, 235, 130, 112, 216, 61, 51, 205, 224, 101, 27, 220, 123, 244, 158, 170, 150, 137, 97, 254, 144, 2, 103, 175, 53, 114, 29, 36, 174]
 
     loop {
-        let mut mac = Hmac::<Sha256>::new_varkey(&config.hmac_client_key).expect("HMAC can take key of any size");
         stream
             .read_exact(&mut header)
             .await
@@ -104,66 +93,59 @@ pub async fn run_register_process(config: Configuration) {
             .read_exact(buf)
             .await
             .expect("Less data then expected");
-
-        mac.update(&header);
-        mac.update(&buf);
-
         stream
             .read_exact(hmac_signature)
             .await
             .expect("Less data then expected");
 
-        let mut buf = Read::chain(&header as &[u8], &buf as &[u8]); // .chain(&hmac_signature as &[u8]);
+        let mut whole_buf = Read::chain(&header as &[u8], &buf as &[u8]);
 
-        let proper_mac = mac.finalize().into_bytes();
-
-        if hmac_signature.as_slice() != &*proper_mac {
-            log::error!("wrong HMAC signature! \ngot: {:?}\nexptected: {:?}", hmac_signature.as_slice(), &*proper_mac);
-        }
-
-        match deserialize_register_command(&mut buf) {
+        match deserialize_register_command(&mut whole_buf) {
             Ok(reg_cmd) => {
                 log::info!("[run_register_process] message parsed successfully");
                 match reg_cmd {
                     RegisterCommand::Client(cmd) => {
+                        let mut status_code = StatusCode::Ok;
+
+                        let mut mac = Hmac::<Sha256>::new_varkey(&config.hmac_client_key).expect("HMAC can take key of any size");
+                        mac.update(&header);
+                        mac.update(&buf);
+                        let proper_mac = mac.finalize().into_bytes();
+                        if hmac_signature.as_slice() != &*proper_mac {
+                            log::error!("wrong HMAC signature! \ngot: {:?}\nexptected: {:?}", hmac_signature.as_slice(), &*proper_mac);
+                            status_code = StatusCode::AuthFailure;
+                        }
+                
                         if cmd.header.sector_idx >= config.public.max_sector {
                             log::error!("[run_register_process] Too high sector_idx requested! Max is {}, Requested: {}", cmd.header.sector_idx, config.public.max_sector);
-                            // TODO response
+                            status_code = StatusCode::InvalidSectorIndex;
+                        }
+
+                        if status_code != StatusCode::Ok {
+                            // too high idx or wrong HMAC 
+                            let op_return : OperationReturn = match cmd.content {
+                                ClientRegisterCommandContent::Read => OperationReturn::Read(ReadReturn{read_data: None}),
+                                ClientRegisterCommandContent::Write {data: _} => OperationReturn::Write{},
+                            };
+                            send_response_to_client(client_addr, cmd.clone(), status_code, op_return, &config.hmac_client_key);
                             continue;
                         }
-                    
-                        let cmd_lambda = cmd.clone();
-                        register.client_command(cmd, Box::new(move |op_complete: domain::OperationComplete| {
 
-                            let status_code : u8 = match op_complete.status_code {
-                                StatusCode::Ok => {0x0},
-                                StatusCode::AuthFailure{} => {0x1},
-                                StatusCode::InvalidSectorIndex{} => {0x2},
-                            };
-
-                            let dir : Direction = match cmd_lambda.content {
-                                ClientRegisterCommandContent::Read => {
-                                    if let OperationReturn::Read(ret) = op_complete.op_return {
-                                        let read_data = ret.read_data; 
-                                        Direction::ReadResponse(read_data, status_code)
-                                    } else {
-                                        // error in program logic
-                                        panic!("internal error, in statement: 'if let OperationReturn::Read(ret) = op_complete.op_return'");
-                                    }
+                        let hmac_client_key = config.hmac_client_key.clone();
+                        register.client_command(cmd.clone(), Box::new(move |op_complete: domain::OperationComplete| {
+                            match op_complete.status_code {
+                                status_code@StatusCode::Ok => {
+                                    send_response_to_client(
+                                        client_addr,
+                                        cmd,
+                                        status_code,
+                                        op_complete.op_return,
+                                        &hmac_client_key,
+                                        );
                                 },
-                                ClientRegisterCommandContent::Write{data: _} => {
-                                    Direction::WriteResponse(status_code)
-                                },
-                            };
-                            let mut serialized_response = Cursor::new(vec![]);
-                            safe_unwrap!(serialize_register_command_generic(&RegisterCommand::Client(cmd_lambda), &mut serialized_response, dir));
-
-                            let mut stream = std::net::TcpStream::connect(client_addr.clone()).unwrap();
-                            
-                            log::info!("sending response to client {:?} <you can remove 'clone' above.", client_addr);
-                            stream.write_all(serialized_response.get_ref()).unwrap();
-
-                        })).await; // op complete lambda
+                                code => panic!("internal error: error status code {:?} should be handled before", code),
+                            }
+                        })).await;
                     },
                     RegisterCommand::System(cmd) => {
                         register.system_command(cmd).await;
@@ -175,8 +157,53 @@ pub async fn run_register_process(config: Configuration) {
                 continue;
             }
         }
-
     } // loop
+}
+
+fn serialize_status_code(status_code: StatusCode) -> u8 {
+    let res = match status_code {
+        StatusCode::Ok => {0x0},
+        StatusCode::AuthFailure{} => {0x1},
+        StatusCode::InvalidSectorIndex{} => {0x2},
+    };
+    res as u8
+}
+
+fn send_response_to_client(
+    client_addr: std::net::SocketAddr, 
+    cmd: ClientRegisterCommand,
+    status_code: StatusCode,
+    op_return: OperationReturn,
+    hmac_client_key: &[u8; 32],
+    ) {
+        let status_code : u8 = serialize_status_code(status_code);
+
+        let dir : Direction = match cmd.content {
+            ClientRegisterCommandContent::Read => {
+                if let OperationReturn::Read(ret) = op_return {
+                    let read_data = ret.read_data; 
+                    Direction::ReadResponse(read_data, status_code)
+                } else {
+                    // error in program logic
+                    panic!("internal error, in statement: 'if let OperationReturn::Read(ret) = op_complete.op_return'");
+                }
+            },
+            ClientRegisterCommandContent::Write{data: _} => {
+                Direction::WriteResponse(status_code)
+            },
+        };
+        let mut serialized_response = Cursor::new(vec![]);
+        safe_unwrap!(serialize_register_command_generic(&RegisterCommand::Client(cmd), &mut serialized_response, dir));
+
+        let mut mac = Hmac::<Sha256>::new_varkey(hmac_client_key).expect("HMAC can take key of any size");
+        mac.update(serialized_response.get_ref());
+        let response_mac = mac.finalize().into_bytes();
+        serialized_response.write_all(&response_mac).unwrap();
+
+        let mut stream = std::net::TcpStream::connect(client_addr.clone()).unwrap();
+        
+        log::info!("sending response to client {:?} <you can remove 'clone' above.", client_addr);
+        stream.write_all(serialized_response.get_ref()).unwrap();
 }
 
 pub mod atomic_register_public {
@@ -230,7 +257,11 @@ pub mod atomic_register_public {
             writing: false,
             operation_complete: None,
         };
-        (Box::new(BasicAtomicRegister{self_id: Rank(self_ident), state, metadata, register_client, sectors_manager, processes_count}), None)
+        // (Box::new(BasicAtomicRegister{self_id: Rank(self_ident), state, metadata, register_client, sectors_manager, processes_count}), None)
+        (
+            Box::new(TestClientOkAtomicRegister{}), 
+            None
+        )
     }
 
     // timestamp
@@ -289,6 +320,40 @@ pub mod atomic_register_public {
     use crate::StatusCode;
     use crate::ReadReturn;
     use log;
+
+
+    // Tu jestem
+    // jak już to zadziała testy powinny działać.
+    #[derive(Sync, Send)]
+    pub struct TestClientOkAtomicRegister {}
+
+
+    pub struct TestClientAuthErrAtomicRegister {}
+    pub struct TestClientInvalidSectorErrAtomicRegister {}
+    
+    #[async_trait::async_trait]
+    impl AtomicRegister for TestClientOkAtomicRegister {
+        async fn client_command(
+            &mut self,
+            cmd: ClientRegisterCommand,
+            operation_complete: Box<dyn FnOnce(OperationComplete) + Send + Sync>) {
+                let ret = if let ClientRegisterCommandContent::Write{data} = cmd.content {
+                    OperationReturn::Read(ReadReturn{read_data: Some(data)})
+                } else {
+                    OperationReturn::Write{}
+                };
+
+                log::info!("client_command from TestClientOkAtomicRegister: calling lambda...");
+                let op_complete = OperationComplete{
+                    op_return: ret,
+                    request_identifier: cmd.header.request_identifier,
+                    status_code: StatusCode::Ok,
+                };
+                operation_complete(op_complete);
+        }
+        
+        async fn system_command(&mut self, _: SystemRegisterCommand) {}
+    }
 
     impl BasicAtomicRegister {
         fn highest(&self) -> Rank {
