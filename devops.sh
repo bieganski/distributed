@@ -17,7 +17,7 @@ function usage {
 }
 
 function unpack {
-	base=dslab0$NUM
+	base=dslab$NUM
 	file=~/Downloads/$base.tgz
 	if ! [ -f $file ]; then
 		log "Error: $file not found!"

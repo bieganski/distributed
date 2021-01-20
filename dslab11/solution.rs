@@ -197,9 +197,13 @@ impl Raft {
     fn timeout(&mut self, ctx: &mut <Raft as Actor>::Context) {
         match &mut self.process_type {
             ProcessType::Follower { .. } => {
+                // rozpocznij glosowanie?
                 unimplemented!();
             }
             ProcessType::Candidate { .. } => {
+                // sprawdz wyniki glosowania, 
+                // jesli wygralismy to jestesmy liderem, 
+                // else zaczynamy wybory od nowa
                 unimplemented!();
             }
             ProcessType::Leader => {
@@ -231,9 +235,20 @@ impl Handler<RaftMessage> for Raft {
             (_, RaftMessageContent::Heartbeat { leader_id }) => {
                 self.heartbeat(leader_id, msg.header.term);
             }
-            _ => {
+            (_, RaftMessageContent::RequestVote{candidate_id}) => {
+                // jeśli jest z dobrego termu:
+                // jeśli na nikogo nie zagłosowaliśmy to głosujemy 
+                // zapisujemy w stable storage że już głosowaliśmy.
+                // smutny przeplot - lepiej żeby zagłosować 0 razy niż 2 razy.
                 unimplemented!();
-            }
+            },
+            (_, RaftMessageContent::RequestVoteResponse{granted, source}) => {
+                // jeśli jesteśmy kandydatem to zliczamy
+                unimplemented!();
+            },
+            (_, RaftMessageContent::HeartbeatResponse{}) => {
+                unimplemented!();
+            },
         }
     }
 }
