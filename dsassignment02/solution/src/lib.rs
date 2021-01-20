@@ -11,7 +11,7 @@ pub use stable_storage_public::*;
 pub use transfer_public::*;
 use tokio::net::TcpListener;
 use tokio::io::AsyncReadExt;
-use std::io::Read;
+use std::io::{Read, Write, Cursor};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 
@@ -60,7 +60,7 @@ pub async fn run_register_process(config: Configuration) {
         .await
         .unwrap();
 
-    let (mut stream, _) = listener.accept().await.unwrap();
+    let (mut stream, client_addr) = listener.accept().await.unwrap();
 
     let (mut register, pending_cmd) = build_atomic_register(
         1,
@@ -72,9 +72,9 @@ pub async fn run_register_process(config: Configuration) {
     .await;
 
     let mut header = [0_u8; 8];
-    let mut read_content : &mut Vec<u8> = &mut vec![0_u8; 16]; // req. nr. + sector idx + cmd content + HMAC
-    let mut write_content : &mut Vec<u8> = &mut vec![0_u8; 16 + 4096];
-    let mut hmac_signature : &mut Vec<u8> = &mut vec![0_u8; HMAC_TAG_SIZE];
+    let read_content : &mut Vec<u8> = &mut vec![0_u8; 16]; // req. nr. + sector idx + cmd content + HMAC
+    let write_content : &mut Vec<u8> = &mut vec![0_u8; 16 + 4096];
+    let hmac_signature : &mut Vec<u8> = &mut vec![0_u8; HMAC_TAG_SIZE];
 
     // aaaa
     // [208, 113, 246, 189, 248, 159, 121, 131, 174, 124, 11, 29, 85, 232, 232, 192, 251, 145, 248, 98, 22, 173, 198, 87, 250, 129, 106, 138, 60, 63, 144, 192]
@@ -129,11 +129,44 @@ pub async fn run_register_process(config: Configuration) {
                         if cmd.header.sector_idx >= config.public.max_sector {
                             log::error!("[run_register_process] Too high sector_idx requested! Max is {}, Requested: {}", cmd.header.sector_idx, config.public.max_sector);
                             // TODO response
+                            continue;
                         }
+                    
+                        let cmd_lambda = cmd.clone();
+                        register.client_command(cmd, Box::new(move |op_complete: domain::OperationComplete| {
 
+                            let status_code : u8 = match op_complete.status_code {
+                                StatusCode::Ok => {0x0},
+                                StatusCode::AuthFailure{} => {0x1},
+                                StatusCode::InvalidSectorIndex{} => {0x2},
+                            };
+
+                            let dir : Direction = match cmd_lambda.content {
+                                ClientRegisterCommandContent::Read => {
+                                    if let OperationReturn::Read(ret) = op_complete.op_return {
+                                        let read_data = ret.read_data; 
+                                        Direction::ReadResponse(read_data, status_code)
+                                    } else {
+                                        // error in program logic
+                                        panic!("internal error, in statement: 'if let OperationReturn::Read(ret) = op_complete.op_return'");
+                                    }
+                                },
+                                ClientRegisterCommandContent::Write{data: _} => {
+                                    Direction::WriteResponse(status_code)
+                                },
+                            };
+                            let mut serialized_response = Cursor::new(vec![]);
+                            safe_unwrap!(serialize_register_command_generic(&RegisterCommand::Client(cmd_lambda), &mut serialized_response, dir));
+
+                            let mut stream = std::net::TcpStream::connect(client_addr.clone()).unwrap();
+                            
+                            log::info!("sending response to client {:?} <you can remove 'clone' above.", client_addr);
+                            stream.write_all(serialized_response.get_ref()).unwrap();
+
+                        })).await; // op complete lambda
                     },
                     RegisterCommand::System(cmd) => {
-
+                        register.system_command(cmd).await;
                     },
                 }
             },
@@ -499,6 +532,7 @@ pub mod atomic_register_public {
                     let op_complete = None;
                     let op_complete = std::mem::replace(&mut self.state.operation_complete, op_complete);
                     
+                    log::info!("trying to call 'op_complete' (if you see this, probably you want to remove me at {} line.", line!());
                     (op_complete.unwrap())(OperationComplete{
                         status_code: StatusCode::Ok,
                         request_identifier: self.state.rid.0,
@@ -646,8 +680,8 @@ pub mod transfer_public {
     #[derive(Debug, PartialEq)]
     pub enum Direction {
         Request,
-        ReadResponse(SectorVec),
-        WriteResponse,
+        ReadResponse(Option<SectorVec>, u8), // u8 stands for Status Code
+        WriteResponse(u8), // u8 stands for Status Code
     }
 
 
@@ -698,7 +732,7 @@ pub mod transfer_public {
     }
 
 
-    fn serialize_register_command_generic(
+    pub fn serialize_register_command_generic(
         cmd: &RegisterCommand,
         writer: &mut dyn Write,
         direction: Direction,
@@ -712,6 +746,13 @@ pub mod transfer_public {
 
                 let msg_type : u8;
 
+                // if it's request, then its simply third byte of padding
+                let status_code = match direction {
+                    Direction::Request{} => {0x0},
+                    Direction::ReadResponse(_, code) => {code},
+                    Direction::WriteResponse(code) => {code},
+                };
+
                 match content {
                     ClientRegisterCommandContent::Read => {
                         msg_type = if let Direction::Request = direction {0x1} else {0x41};
@@ -719,8 +760,11 @@ pub mod transfer_public {
                         if let Direction::Request = direction {
                             safe_unwrap!(separable_part.write_all(&sector_idx.to_be_bytes()));
                         }
-                        if let Direction::ReadResponse(data) = direction {
-                            let SectorVec(data) = data;
+                        if let Direction::ReadResponse(data, _) = direction {
+                            if let None = data {
+                                ()
+                            }
+                            let SectorVec(data) = data.unwrap();
                             if data.len() != 4096 {
                                 log::error!("malformed SectorVec! data length should be 4096, not {}", data.len());
                             }
@@ -740,11 +784,11 @@ pub mod transfer_public {
                         }
                     }
                 }
-                
                 // common part
                 vec![
                     buf_writer.write_all(MAGIC),
-                    buf_writer.write_all(&[0x0, 0x0, 0x0]), // padding
+                    buf_writer.write_all(&[0x0, 0x0]), // padding
+                    buf_writer.write_all(&[status_code]),
                     buf_writer.write_all(&msg_type.to_be_bytes()),
                     buf_writer.write_all(&request_identifier.to_be_bytes()),
                 ].into_iter().for_each(|x| {safe_unwrap!(x)});
