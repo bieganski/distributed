@@ -16,6 +16,9 @@ use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::stream::{self, StreamExt};
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 
 // Hmac uses also sha2 crate.
 use hmac::{Hmac, Mac, NewMac};
@@ -25,25 +28,65 @@ use log;
 
 static HMAC_TAG_SIZE: usize = 32;
 
-#[derive(Clone, Default)]
-struct SramStableStorage {
-    map: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+pub struct BasicStableStorage {
+    pub root: PathBuf,
+}
+
+impl BasicStableStorage {
+    pub async fn new(root: PathBuf) -> Self {
+        let mut meta_storage = PathBuf::new();
+        meta_storage.push(root.clone());
+        meta_storage.push("meta");
+        tokio::fs::create_dir(meta_storage.clone()).await.unwrap(); // TODO if it actually DOES exist DO NOT throw error
+        Self{root: meta_storage}
+    }
+
+    fn calculate_hash<T: Hash>(t: &T) -> u64 {
+        let mut s = DefaultHasher::new();
+        t.hash(&mut s);
+        s.finish()
+    }
+
+    fn key_to_fname(&self, key: &str) -> PathBuf {
+        let basename = BasicStableStorage::calculate_hash(&key).to_string();
+        let mut path = self.root.clone();
+        path.push(PathBuf::from(basename));
+        path
+    }
 }
 
 #[async_trait::async_trait]
-impl StableStorage for SramStableStorage {
+impl StableStorage for BasicStableStorage {
     async fn put(&mut self, key: &str, value: &[u8]) -> Result<(), String> {
-        let mut map = self.map.lock().unwrap();
-        map.insert(key.to_owned(), value.to_vec());
-        Ok(())
+        let fname = self.key_to_fname(key);
+        log::debug!("[BasicStableStorage] put: trying to open file {:?}", &fname);
+        match tokio::fs::File::create(fname.clone()).await {
+                Ok(mut f) => {
+                f.write_all(value).await.unwrap_or_else(|_| {log::error!("[fs] cannot write to {:?}", &fname);});
+                Ok(())
+            },
+            Err(msg) => Err(msg.to_string())
+        }
     }
 
     async fn get(&self, key: &str) -> Option<Vec<u8>> {
-        let map = self.map.lock().unwrap();
-        map.get(key).map(Clone::clone)
+        let fname = self.key_to_fname(key);
+        log::debug!("[BasicStableStorage] get: trying to open file {:?}", &fname);
+        match tokio::fs::File::open(fname.clone()).await {
+            Ok(mut f) => {
+                let mut res = Vec::new();
+                f.read_to_end(&mut res).await.unwrap_or_else(|_| {
+                    log::error!("[fs] cannot read from {:?}", &fname);
+                    return 0;
+                });
+                Some(res)
+            },
+            Err(_) => {
+                None
+            },
+        }
     }
 }
-
 
 pub async fn run_register_process(config: Configuration) {
     let my_addr = &config.public.tcp_locations[config.public.self_rank as usize - 1];
@@ -53,7 +96,7 @@ pub async fn run_register_process(config: Configuration) {
 
     let (mut register, pending_cmd) = build_atomic_register(
         1,
-        Box::new(SramStableStorage::default()),
+        Box::new(BasicStableStorage::new(config.public.storage_dir.clone()).await),
         Arc::new(BasicRegisterClient::new(config.public.tcp_locations.clone())),
         build_sectors_manager(config.public.storage_dir),
         1,
@@ -209,7 +252,7 @@ async fn send_response_to_client(
         let response_mac = mac.finalize().into_bytes();
         std::io::Write::write_all(&mut serialized_response, &response_mac).unwrap();
 
-        stream.write_all(serialized_response.get_ref()).await;
+        stream.write_all(serialized_response.get_ref()).await.unwrap();
 }
 
 pub mod atomic_register_public {
