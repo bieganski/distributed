@@ -14,40 +14,15 @@ use tokio::net::TcpStream;
 
 static HMAC_TAG_SIZE: usize = 32;
 
+
 #[tokio::test]
-#[timeout(400000)]
-async fn simple_system() {
+#[timeout(4000)]
+async fn client_response_ok() {
     let _ = env_logger::builder().is_test(true).try_init();
 
-    let storage_dir = tempdir().unwrap();
-    let hmac_client_key = [0x61; 32]; // 0x61 == 'a'
-    // let hmac_client_key = [0x5; 32];
-
-    let tcp_port = 10_000;
-
-    let config = Configuration {
-        public: PublicConfiguration {
-            tcp_locations: vec![("127.0.0.1".to_string(), tcp_port)],
-            self_rank: 1,
-            max_sector: 20,
-            storage_dir: storage_dir.into_path(),
-        },
-        hmac_system_key: [1; 64],
-        hmac_client_key,
-    };
-
-    println!("before spawn");
-    let handle = tokio::spawn(run_register_process(config));
-    println!("after spawn");
-    tokio::join!(handle);
-}
-
-// #[tokio::test]
-// #[timeout(4000)]
-async fn single_process_system_completes_operations() {
     // given
     let hmac_client_key = [5; 32];
-    let tcp_port = 30_287;
+    let tcp_port = 10_000;
     let storage_dir = tempdir().unwrap();
     let request_identifier = 1778;
 
@@ -92,6 +67,7 @@ async fn single_process_system_completes_operations() {
     // asserts for write response
     assert_eq!(&buf[0..4], MAGIC_NUMBER.as_ref());
     assert_eq!(buf[7], 0x42);
+    assert_eq!(buf[6], 0x0); // response status - OK
     assert_eq!(
         u64::from_be_bytes(buf[8..16].try_into().unwrap()),
         request_identifier

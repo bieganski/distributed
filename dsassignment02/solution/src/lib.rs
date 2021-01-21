@@ -10,10 +10,11 @@ pub use sectors_manager_public::*;
 pub use stable_storage_public::*;
 pub use transfer_public::*;
 use tokio::net::TcpListener;
-use tokio::io::AsyncReadExt;
-use std::io::{Read, Write, Cursor};
+use std::io::{Write, Cursor};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::stream::{self, StreamExt};
 
 
 // Hmac uses also sha2 crate.
@@ -50,8 +51,6 @@ pub async fn run_register_process(config: Configuration) {
         .await
         .unwrap();
 
-    let (mut stream, client_addr) = listener.accept().await.unwrap();
-
     let (mut register, pending_cmd) = build_atomic_register(
         1,
         Box::new(SramStableStorage::default()),
@@ -73,6 +72,8 @@ pub async fn run_register_process(config: Configuration) {
     // [208, 44, 139, 113, 235, 130, 112, 216, 61, 51, 205, 224, 101, 27, 220, 123, 244, 158, 170, 150, 137, 97, 254, 144, 2, 103, 175, 53, 114, 29, 36, 174]
 
     loop {
+        let (mut stream, _) = listener.accept().await.unwrap();
+
         stream
             .read_exact(&mut header)
             .await
@@ -88,9 +89,9 @@ pub async fn run_register_process(config: Configuration) {
                 continue
         }
 
-        let buf : &mut Vec<u8> = if header[7] == 0x1 {read_content} else {write_content};
+        let content : &mut Vec<u8> = if header[7] == 0x1 {read_content} else {write_content};
         stream
-            .read_exact(buf)
+            .read_exact(content)
             .await
             .expect("Less data then expected");
         stream
@@ -98,9 +99,14 @@ pub async fn run_register_process(config: Configuration) {
             .await
             .expect("Less data then expected");
 
-        let mut whole_buf = Read::chain(&header as &[u8], &buf as &[u8]);
+        let mut command = std::io::Read::chain(&header as &[u8], &content as &[u8]);
+        // let mut command = &stream::iter(&header);
+        // let mut command = command.chain(stream::iter(content.as_ref()));
+        // let command = command.as_ref();
+        // let mut res = vec![];
+        // let command = std::io::Read::read_to_end(&mut command, &mut res).unwrap();
 
-        match deserialize_register_command(&mut whole_buf) {
+        match deserialize_register_command_send(&mut command) {
             Ok(reg_cmd) => {
                 log::info!("[run_register_process] message parsed successfully");
                 match reg_cmd {
@@ -109,7 +115,7 @@ pub async fn run_register_process(config: Configuration) {
 
                         let mut mac = Hmac::<Sha256>::new_varkey(&config.hmac_client_key).expect("HMAC can take key of any size");
                         mac.update(&header);
-                        mac.update(&buf);
+                        mac.update(&content);
                         let proper_mac = mac.finalize().into_bytes();
                         if hmac_signature.as_slice() != &*proper_mac {
                             log::error!("wrong HMAC signature! \ngot: {:?}\nexptected: {:?}", hmac_signature.as_slice(), &*proper_mac);
@@ -127,7 +133,7 @@ pub async fn run_register_process(config: Configuration) {
                                 ClientRegisterCommandContent::Read => OperationReturn::Read(ReadReturn{read_data: None}),
                                 ClientRegisterCommandContent::Write {data: _} => OperationReturn::Write{},
                             };
-                            send_response_to_client(client_addr, cmd.clone(), status_code, op_return, &config.hmac_client_key);
+                            send_response_to_client(stream, cmd.clone(), status_code, op_return, &config.hmac_client_key).await;
                             continue;
                         }
 
@@ -135,13 +141,16 @@ pub async fn run_register_process(config: Configuration) {
                         register.client_command(cmd.clone(), Box::new(move |op_complete: domain::OperationComplete| {
                             match op_complete.status_code {
                                 status_code@StatusCode::Ok => {
-                                    send_response_to_client(
-                                        client_addr,
-                                        cmd,
-                                        status_code,
-                                        op_complete.op_return,
-                                        &hmac_client_key,
-                                        );
+                                    tokio::spawn(async move {
+                                        send_response_to_client(
+                                            stream,
+                                            cmd,
+                                            status_code,
+                                            op_complete.op_return,
+                                            &hmac_client_key,
+                                            ).await;
+                                    });
+                                
                                 },
                                 code => panic!("internal error: error status code {:?} should be handled before", code),
                             }
@@ -169,8 +178,8 @@ fn serialize_status_code(status_code: StatusCode) -> u8 {
     res as u8
 }
 
-fn send_response_to_client(
-    client_addr: std::net::SocketAddr, 
+async fn send_response_to_client(
+    mut stream: tokio::net::TcpStream, 
     cmd: ClientRegisterCommand,
     status_code: StatusCode,
     op_return: OperationReturn,
@@ -198,12 +207,9 @@ fn send_response_to_client(
         let mut mac = Hmac::<Sha256>::new_varkey(hmac_client_key).expect("HMAC can take key of any size");
         mac.update(serialized_response.get_ref());
         let response_mac = mac.finalize().into_bytes();
-        serialized_response.write_all(&response_mac).unwrap();
+        std::io::Write::write_all(&mut serialized_response, &response_mac).unwrap();
 
-        let mut stream = std::net::TcpStream::connect(client_addr.clone()).unwrap();
-        
-        log::info!("sending response to client {:?} <you can remove 'clone' above.", client_addr);
-        stream.write_all(serialized_response.get_ref()).unwrap();
+        stream.write_all(serialized_response.get_ref()).await;
 }
 
 pub mod atomic_register_public {
@@ -218,7 +224,7 @@ pub mod atomic_register_public {
     use std::sync::Arc;
 
     #[async_trait::async_trait]
-    pub trait AtomicRegister {
+    pub trait AtomicRegister: Send + 'static {
         /// Send client command to the register. After it is completed, we expect
         /// callback to be called. Note that completion of client command happens after
         /// delivery of multiple system commands to the register, as the algorithm specifies.
@@ -321,13 +327,7 @@ pub mod atomic_register_public {
     use crate::ReadReturn;
     use log;
 
-
-    // Tu jestem
-    // jak już to zadziała testy powinny działać.
-    #[derive(Sync, Send)]
     pub struct TestClientOkAtomicRegister {}
-
-
     pub struct TestClientAuthErrAtomicRegister {}
     pub struct TestClientInvalidSectorErrAtomicRegister {}
     
@@ -337,10 +337,13 @@ pub mod atomic_register_public {
             &mut self,
             cmd: ClientRegisterCommand,
             operation_complete: Box<dyn FnOnce(OperationComplete) + Send + Sync>) {
-                let ret = if let ClientRegisterCommandContent::Write{data} = cmd.content {
-                    OperationReturn::Read(ReadReturn{read_data: Some(data)})
-                } else {
+                let ret = if let ClientRegisterCommandContent::Write{data: _} = cmd.content {
+                    log::info!("detected Write...");
                     OperationReturn::Write{}
+                } else {
+                    log::info!("detected Read...");
+                    let dummy_data = SectorVec(vec![0x61; 4096]);
+                    OperationReturn::Read(ReadReturn{read_data: Some(dummy_data)})
                 };
 
                 log::info!("client_command from TestClientOkAtomicRegister: calling lambda...");
@@ -751,6 +754,11 @@ pub mod transfer_public {
 
 
     pub fn deserialize_register_command(data: &mut dyn Read) -> Result<RegisterCommand, Error> {
+        deserialize_register_command_generic(data, Direction::Request{})
+    }
+    
+    // to not breach the API..
+    pub fn deserialize_register_command_send(data: &mut (dyn Read + Send)) -> Result<RegisterCommand, Error> {
         deserialize_register_command_generic(data, Direction::Request{})
     }
 
