@@ -154,15 +154,6 @@ pub async fn run_register_process(config: Configuration) {
     } // loop
 }
 
-fn serialize_status_code(status_code: StatusCode) -> u8 {
-    let res = match status_code {
-        StatusCode::Ok => {0x0},
-        StatusCode::AuthFailure{} => {0x1},
-        StatusCode::InvalidSectorIndex{} => {0x2},
-    };
-    res as u8
-}
-
 async fn send_response_to_client(
     mut stream: tokio::net::TcpStream, 
     cmd: ClientRegisterCommand,
@@ -170,7 +161,7 @@ async fn send_response_to_client(
     op_return: OperationReturn,
     hmac_client_key: &[u8; 32],
     ) {
-        let status_code : u8 = serialize_status_code(status_code);
+        let status_code = status_code as u8;
 
         let dir : Direction = match cmd.content {
             ClientRegisterCommandContent::Read => {

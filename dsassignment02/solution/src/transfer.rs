@@ -10,6 +10,7 @@ pub mod transfer_public {
     use crate::ClientRegisterCommandContent;
     use std::convert::TryInto;
     use std::io::{Error, Read, Write, BufWriter, Cursor};
+    pub use crate::transfer_system;
 
     const MAGIC: &[u8; 4] = &[0x61, 0x74, 0x64, 0x64];
     const MSG_OFFSET : usize = 7;
@@ -49,6 +50,12 @@ pub mod transfer_public {
 
         if &read_buf[0..MAGIC.len()] != MAGIC {
             return safe_err_return!(format!("wrong Magic number: expected {:?}, got {:?}", MAGIC, &read_buf[0..MAGIC.len()]));
+        }
+
+        // split by message type
+        if &read_buf[7] >= &0x3 {
+            println!("widze system");
+            return transfer_system::deserialize_system_command(data);
         }
 
         // response not supported for now
@@ -148,8 +155,8 @@ pub mod transfer_public {
                 // part that depends on msg. type
                 safe_unwrap!(buf_writer.write_all(separable_part.buffer()));
             },
-            RegisterCommand::System(_) => {
-                unimplemented!()
+            RegisterCommand::System(cmd) => {
+                transfer_system::serialize_system_command(&cmd, &mut buf_writer)
             },
         }
         Ok(())
@@ -164,4 +171,134 @@ pub mod transfer_public {
 }
 
 
+pub mod transfer_system {
+    use crate:: SystemRegisterCommand;
+    use crate::SystemCommandHeader;
+    use crate::RegisterCommand;
+    use crate::SectorVec;
+    use crate::SystemRegisterCommandContent;
+    use std::io::{Read, Write, Cursor, Error, BufWriter};
+    use uuid::Uuid;
+    use std::convert::TryInto;
 
+    const MAGIC: &[u8; 4] = &[0x61, 0x74, 0x64, 0x64];
+
+    #[derive(Debug, PartialEq)]
+    pub enum Direction {
+        Request,
+        Response(u8), // u8 stands for Status Code
+    }
+
+    fn serialize_msg_type(system_msg_type: &SystemRegisterCommandContent) -> u8 {
+        match system_msg_type {
+            SystemRegisterCommandContent::ReadProc{} => {0x3},
+            SystemRegisterCommandContent::Value{timestamp, write_rank, sector_data} => {0x4},
+            SystemRegisterCommandContent::WriteProc{timestamp, write_rank, data_to_write} => {0x5},
+            SystemRegisterCommandContent::Ack{} => {0x6},
+        }
+    }
+
+    pub fn serialize_system_command(cmd: &SystemRegisterCommand, writer: &mut dyn Write) {
+        serialize_system_command_generic(cmd, writer, &Direction::Request);
+    }
+
+    pub fn serialize_system_response(cmd: &SystemRegisterCommand, writer: &mut dyn Write, status_code: u8) {
+        serialize_system_command_generic(cmd, writer, &Direction::Response(status_code));
+    }
+
+    pub fn serialize_system_command_generic(cmd: &SystemRegisterCommand, writer: &mut dyn Write, dir: &Direction) {
+
+        if let Direction::Response(_) = dir {
+            unimplemented!()
+        }
+        
+        let mut common = BufWriter::new(writer);
+        let mut content = BufWriter::new(Cursor::new(Vec::<u8>::new()));
+        
+        match &cmd.content {
+            SystemRegisterCommandContent::ReadProc{} => {
+                // no content
+            },
+            SystemRegisterCommandContent::WriteProc{timestamp, write_rank, data_to_write} => {
+                let SectorVec(sector) = data_to_write;
+                vec![
+                    common.write_all(&timestamp.to_be_bytes()),
+                    common.write_all(&[0x0; 7]), // padding
+                    common.write_all(&write_rank.to_be_bytes()),
+                    common.write_all(&sector),
+                ].into_iter().for_each(|x| {safe_unwrap!(x)});
+            },
+            SystemRegisterCommandContent::Value{timestamp, write_rank, sector_data} => {
+                let SectorVec(sector) = sector_data;
+                vec![
+                    common.write_all(&timestamp.to_be_bytes()),
+                    common.write_all(&[0x0; 7]), // padding
+                    common.write_all(&write_rank.to_be_bytes()),
+                    common.write_all(&sector),
+                ].into_iter().for_each(|x| {safe_unwrap!(x)});
+            },
+            SystemRegisterCommandContent::Ack{} => {
+                // no content
+            },
+        }
+
+        // common part
+        vec![
+            common.write_all(MAGIC),
+            common.write_all(&[0x0, 0x0]), // padding
+            common.write_all(&cmd.header.process_identifier.to_be_bytes()),
+            common.write_all(&serialize_msg_type(&cmd.content).to_be_bytes()),
+            common.write_all(cmd.header.msg_ident.as_bytes()),
+            common.write_all(&cmd.header.read_ident.to_be_bytes()),
+            common.write_all(&cmd.header.sector_idx.to_be_bytes()),
+            common.write_all(&content.buffer()),
+        ].into_iter().for_each(|x| {safe_unwrap!(x)});
+        todo!()
+    }
+
+    pub fn deserialize_system_command(reader: &mut dyn Read) -> Result<RegisterCommand, Error> {
+        deserialize_system_command_generic(reader, Direction::Request{})
+    }
+
+    fn deserialize_system_command_generic(reader: &mut dyn Read, direction : Direction) -> Result<RegisterCommand, Error> {
+        let mut read_buf = vec![0_u8; 40];
+        let mut content_buf : Vec<u8> = vec![];
+
+        reader.read_exact(&mut read_buf).unwrap();
+        // if num != 40 {
+        //     panic!("internal error! num!= 40 in {:?}, line: {:?}", file!(), line!())
+        // }
+        let num = reader.read_to_end(&mut content_buf).unwrap();
+
+        let uuid : [u8; 16] = read_buf[8..16].try_into().expect("[msg_ident] try_into error");
+        
+        let header = SystemCommandHeader{
+            process_identifier: read_buf[6],
+            msg_ident: Uuid::from_bytes(uuid),
+            read_ident: u64::from_be_bytes(read_buf[24..32].try_into().expect("[read_ident] try_into error")),
+            sector_idx: u64::from_be_bytes(read_buf[32..40].try_into().expect("[sector_idx] try_into error")),
+        };
+
+        let content = match read_buf[7] {
+            0x3 => {SystemRegisterCommandContent::ReadProc{}},
+            0x4 => {SystemRegisterCommandContent::Value{
+                timestamp: u64::from_be_bytes(content_buf[0..8].try_into().expect("[timestamp] try_into error")),
+                write_rank: content_buf[15],
+                sector_data: SectorVec((
+                    &content_buf[16..]).to_vec()
+                )}
+            },
+            0x5 => {SystemRegisterCommandContent::WriteProc{
+                timestamp: u64::from_be_bytes(content_buf[0..8].try_into().expect("[timestamp] try_into error")),
+                write_rank: content_buf[15],
+                data_to_write: SectorVec((
+                    &content_buf[16..]).to_vec()
+                )}
+            },
+            0x6 => {SystemRegisterCommandContent::Ack{}},
+            _ => {panic!("TODO HANDLE ME")},
+        };
+
+        Ok(RegisterCommand::System(SystemRegisterCommand{header, content}))
+    }
+}
