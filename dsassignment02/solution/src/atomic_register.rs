@@ -50,6 +50,8 @@ pub mod atomic_register_public {
             operation_complete: None,
         };
         (Box::new(BasicAtomicRegister{self_id: Rank(self_ident), state, metadata, register_client, sectors_manager, processes_count}), None)
+        
+        // enable this for client_response test
         // (
         //     Box::new(TestClientOkAtomicRegister{}), 
         //     None

@@ -74,14 +74,27 @@ pub async fn run_register_process(config: Configuration) {
             continue;
         }
 
-        if header[7] != 0x1 && header[7] != 0x2 {
+        let supported_msg_types = 1..7;
+
+        if ! supported_msg_types.contains(&header[7]) {
             log::error!("[run_register_process] wrong message type! Got {:?}", header[7]);
-                continue
+            continue
         }
 
-        let content : &mut Vec<u8> = if header[7] == 0x1 {read_content} else {write_content};
+        // let content : &mut Vec<u8> = if header[7] == 0x1 {read_content} else {write_content};
+        let mut content : Vec<u8> = match header[7] {
+            0x1 => {vec![0_u8; 16]}, // client read
+            0x2 => {vec![0_u8; 16 + 4096]}, // client write
+            
+            0x3 => {vec![0_u8; 32 + 0]}, // system read, no content
+            0x4 => {vec![0_u8; 32 + 16 + 4096]}, // system value
+            0x5 => {vec![0_u8; 32 + 16 + 4096]}, // system write
+            0x6 => {vec![0_u8; 32 + 0]}, // system ack, no content
+            _ => {panic!("internal error: i should have been handled earlier..")},
+        };
+
         stream
-            .read_exact(content)
+            .read_exact(&mut content)
             .await
             .expect("Less data then expected");
         stream
