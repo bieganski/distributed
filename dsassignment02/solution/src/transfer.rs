@@ -54,8 +54,8 @@ pub mod transfer_public {
 
         // split by message type
         if &read_buf[7] >= &0x3 {
-            println!("widze system");
-            return transfer_system::deserialize_system_command(data);
+            println!("omg");
+            return transfer_system::deserialize_system_command(&mut read_buf.as_slice());
         }
 
         // response not supported for now
@@ -222,19 +222,19 @@ pub mod transfer_system {
             SystemRegisterCommandContent::WriteProc{timestamp, write_rank, data_to_write} => {
                 let SectorVec(sector) = data_to_write;
                 vec![
-                    common.write_all(&timestamp.to_be_bytes()),
-                    common.write_all(&[0x0; 7]), // padding
-                    common.write_all(&write_rank.to_be_bytes()),
-                    common.write_all(&sector),
+                    content.write_all(&timestamp.to_be_bytes()),
+                    content.write_all(&[0x0; 7]), // padding
+                    content.write_all(&write_rank.to_be_bytes()),
+                    content.write_all(&sector),
                 ].into_iter().for_each(|x| {safe_unwrap!(x)});
             },
             SystemRegisterCommandContent::Value{timestamp, write_rank, sector_data} => {
                 let SectorVec(sector) = sector_data;
                 vec![
-                    common.write_all(&timestamp.to_be_bytes()),
-                    common.write_all(&[0x0; 7]), // padding
-                    common.write_all(&write_rank.to_be_bytes()),
-                    common.write_all(&sector),
+                    content.write_all(&timestamp.to_be_bytes()),
+                    content.write_all(&[0x0; 7]), // padding
+                    content.write_all(&write_rank.to_be_bytes()),
+                    content.write_all(&sector),
                 ].into_iter().for_each(|x| {safe_unwrap!(x)});
             },
             SystemRegisterCommandContent::Ack{} => {
@@ -253,7 +253,6 @@ pub mod transfer_system {
             common.write_all(&cmd.header.sector_idx.to_be_bytes()),
             common.write_all(&content.buffer()),
         ].into_iter().for_each(|x| {safe_unwrap!(x)});
-        todo!()
     }
 
     pub fn deserialize_system_command(reader: &mut dyn Read) -> Result<RegisterCommand, Error> {
@@ -264,13 +263,19 @@ pub mod transfer_system {
         let mut read_buf = vec![0_u8; 40];
         let mut content_buf : Vec<u8> = vec![];
 
+        if let Direction::Response(_) = direction {
+            unimplemented!()
+        }
+
         reader.read_exact(&mut read_buf).unwrap();
         // if num != 40 {
         //     panic!("internal error! num!= 40 in {:?}, line: {:?}", file!(), line!())
         // }
         let num = reader.read_to_end(&mut content_buf).unwrap();
 
-        let uuid : [u8; 16] = read_buf[8..16].try_into().expect("[msg_ident] try_into error");
+        println!("num: {:?}", num);
+
+        let uuid : [u8; 16] = read_buf[8..24].try_into().expect("[msg_ident] try_into error");
         
         let header = SystemCommandHeader{
             process_identifier: read_buf[6],

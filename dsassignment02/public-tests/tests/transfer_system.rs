@@ -7,13 +7,8 @@ use uuid::Uuid;
 use std::io::{BufReader, Cursor};
 
 
-// TODO tu jestem
-// name clash with deserialize_register_command I suppose...
-
-
-
-// #[test]
-// #[timeout(200)]
+#[test]
+#[timeout(200)]
 fn serialize_deserialize_is_identity() {
     
     let sector_data = SectorVec(vec![0x61; 4096]);
@@ -37,28 +32,15 @@ fn serialize_deserialize_is_identity() {
     let system_cmd_read  = SystemRegisterCommand{content: read,  ..system_cmd_value};
     let system_cmd_ack   = SystemRegisterCommand{content: ack,   ..system_cmd_value};
 
-    let mut sink_ser: Vec<u8> = Vec::new();
-    let mut sink_deser: Vec<u8> = Vec::new();
+    let mut sink_ser: Vec<u8>;
 
-    serialize_register_command(&RegisterCommand::System(system_cmd_value), &mut sink_ser).expect("Could not serialize");
-    let deserialized_cmd = deserialize_register_command(&mut BufReader::new(Cursor::new(sink_deser))).expect("Could not deserialize");
-
-
-    // let mut slice: &[u8] = &sink[..];
-    // let data_read: &mut dyn std::io::Read = &mut slice;
-    // let deserialized_cmd = deserialize_register_command(data_read).expect("Could not deserialize");
-
-    // // then
-    // match deserialized_cmd {
-    //     RegisterCommand::Client(ClientRegisterCommand {
-    //         header,
-    //         content: ClientRegisterCommandContent::Read,
-    //     }) => {
-    //         assert_eq!(header.sector_idx, sector_idx);
-    //         assert_eq!(header.request_identifier, request_identifier);
-    //     }
-    //     _ => panic!("Expected Read command"),
-    // }
+    for cmd in vec![system_cmd_value, system_cmd_write, system_cmd_read, system_cmd_ack] {
+        println!("checking {:?}...", cmd);
+        sink_ser = Vec::new();
+        serialize_register_command(&RegisterCommand::System(cmd.clone()), &mut sink_ser).unwrap();
+        let deserialized_cmd = deserialize_register_command(&mut BufReader::new(Cursor::new(sink_ser))).unwrap();
+        assert_eq!(RegisterCommand::System(cmd), deserialized_cmd);
+    }
 }
 
 
