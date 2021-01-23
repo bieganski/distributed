@@ -64,12 +64,24 @@ pub struct SystemRegisterCommand {
 impl std::fmt::Display for SystemRegisterCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, 
-            "(\n\tfrom {}\n\tuuid: {}\n\trid:{}\n\tsector: {}\n\t)\n", 
+            "(\n\tfrom {}\n\tuuid: {}\n\trid:{}\n\tsector: {}\n\tcontent type: {}\n\t)\n", 
             self.header.process_identifier, 
             &self.header.msg_ident.to_string()[..6],
             self.header.read_ident,
-            self.header.sector_idx
+            self.header.sector_idx,
+            self.content,
         )
+    }
+}
+
+impl std::fmt::Display for SystemRegisterCommandContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SystemRegisterCommandContent::Ack => {write!(f, "Ack")},
+            SystemRegisterCommandContent::ReadProc => {write!(f, "ReadProc")},
+            SystemRegisterCommandContent::WriteProc{timestamp: _, write_rank: _, data_to_write: _} => {write!(f, "WriteProc")},
+            SystemRegisterCommandContent::Value{timestamp: _, write_rank: _, sector_data: _} => {write!(f, "Value")},
+        }
     }
 }
 

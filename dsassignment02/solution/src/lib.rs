@@ -33,7 +33,6 @@ use std::sync::Mutex;
 // Hmac uses also sha2 crate.
 use hmac::{Hmac, Mac, NewMac};
 use sha2::Sha256;
-use crate::domain::MAGIC_NUMBER;
 use log;
 
 
@@ -44,8 +43,8 @@ static HMAC_TAG_SIZE: usize = 32;
 use lazy_static::lazy_static;
 
 lazy_static! {
-    static ref SENT_BCAST:  Mutex<HashMap<u8, Vec< SystemRegisterCommand>>>       = Mutex::new(HashMap::new());
-    static ref SENT_SINGLE: Mutex<HashMap<u8, Vec<(SystemRegisterCommand, u8)>>>  = Mutex::new(HashMap::new()); // (cmd, target)
+    pub static ref SENT_BCAST:  Mutex<HashMap<u8, Vec< SystemRegisterCommand>>>       = Mutex::new(HashMap::new());
+    pub static ref SENT_SINGLE: Mutex<HashMap<u8, Vec<(SystemRegisterCommand, u8)>>>  = Mutex::new(HashMap::new()); // (cmd, target)
 }
 
 
