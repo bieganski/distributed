@@ -236,6 +236,7 @@ pub mod transfer_system {
                     content.write_all(&write_rank.to_be_bytes()),
                     content.write_all(&sector),
                 ].into_iter().for_each(|x| {safe_unwrap!(x)});
+                log::info!("serialize Value: len {}", content.buffer().len());
             },
             SystemRegisterCommandContent::Ack{} => {
                 // no content

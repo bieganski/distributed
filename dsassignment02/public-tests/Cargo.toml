@@ -19,3 +19,5 @@ sha2 = "0.9"
 async-trait = "0.1"
 async-channel = "1.5"
 test-env-log = "0.2.4"
+lazy_static = "1.4.0"
+

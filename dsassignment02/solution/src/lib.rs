@@ -19,20 +19,85 @@ pub use crate::transfer::transfer_public::*;
 pub use transfer_public::*;
 pub use stable_storage_public::*;
 
+#[allow (unused_imports)]
+use std::time::Duration;
 
 use tokio::net::TcpListener;
 use std::io::{Cursor};
 use std::sync::{Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 // Hmac uses also sha2 crate.
 use hmac::{Hmac, Mac, NewMac};
 use sha2::Sha256;
-
+use crate::domain::MAGIC_NUMBER;
 use log;
 
+
+use std::io::{Write, BufWriter};
+
 static HMAC_TAG_SIZE: usize = 32;
+
+use lazy_static::lazy_static;
+
+lazy_static! {
+    static ref SENT_BCAST:  Mutex<HashMap<u8, Vec< SystemRegisterCommand>>>       = Mutex::new(HashMap::new());
+    static ref SENT_SINGLE: Mutex<HashMap<u8, Vec<(SystemRegisterCommand, u8)>>>  = Mutex::new(HashMap::new()); // (cmd, target)
+}
+
+
+pub struct TestRegisterClient {
+    rank: u8,
+    register_client: Box<dyn RegisterClient>,
+}
+
+impl TestRegisterClient {
+    fn new(register_client: Box<dyn RegisterClient>, rank: u8) -> Self {
+        SENT_SINGLE.lock().unwrap().insert(rank, Vec::new());
+        SENT_BCAST.lock().unwrap().insert(rank, Vec::new());
+        
+        Self{
+            rank,
+            register_client,
+        }
+    }
+}
+
+pub fn summary() {
+
+    let mut s = String::from("");
+    s.push_str("\n\n=========== SUMMARY:");
+    for (k, v) in SENT_BCAST.lock().unwrap().iter() {
+        s.push_str(&format!("\n@@@@@ BROADCASTED BY {}:\n", k));
+        for el in v.iter() {
+            s.push_str(&format!("{}", el));
+        }
+    }
+    for (k, v) in SENT_SINGLE.lock().unwrap().iter() {
+        s.push_str(&format!("\n@@@@@ DIRECTLY SENT BY {}:\n", k));
+        for (cmd, target) in v.iter() {
+            s.push_str(&format!("targeted to {}\n{}", target, cmd));
+        }
+    }
+    log::info!("{}", s);
+}
+
+#[async_trait::async_trait]
+impl RegisterClient for TestRegisterClient {
+    async fn send(&self, msg: Send) {
+        SENT_SINGLE.lock().unwrap().get_mut(&self.rank).unwrap().push(((*msg.cmd).clone(), msg.target as u8));
+        self.register_client.send(msg).await
+    }
+
+    async fn broadcast(&self, msg: Broadcast) {
+        SENT_BCAST.lock().unwrap().get_mut(&self.rank).unwrap().push((*msg.cmd).clone());
+        self.register_client.broadcast(msg).await
+    }
+}
+
 
 
 pub async fn run_register_process(config: Configuration) {
@@ -41,18 +106,17 @@ pub async fn run_register_process(config: Configuration) {
         .await
         .unwrap();
 
+    let register_client = BasicRegisterClient::new(config.public.tcp_locations.clone(), config.hmac_system_key);
     let (mut register, pending_cmd) = build_atomic_register(
-        1,
+        config.public.self_rank,
         Box::new(BasicStableStorage::new(config.public.storage_dir.clone()).await),
-        Arc::new(BasicRegisterClient::new(config.public.tcp_locations.clone())),
+        Arc::new(TestRegisterClient::new(Box::new(register_client), config.public.self_rank)),
         build_sectors_manager(config.public.storage_dir),
-        1,
+        config.public.tcp_locations.len(),
     )
     .await;
 
     let mut header = [0_u8; 8];
-    let read_content : &mut Vec<u8> = &mut vec![0_u8; 16]; // req. nr. + sector idx + cmd content + HMAC
-    let write_content : &mut Vec<u8> = &mut vec![0_u8; 16 + 4096];
     let hmac_signature : &mut Vec<u8> = &mut vec![0_u8; HMAC_TAG_SIZE];
 
     // aaaa
@@ -61,6 +125,7 @@ pub async fn run_register_process(config: Configuration) {
     // 5
     // [208, 44, 139, 113, 235, 130, 112, 216, 61, 51, 205, 224, 101, 27, 220, 123, 244, 158, 170, 150, 137, 97, 254, 144, 2, 103, 175, 53, 114, 29, 36, 174]
 
+    log::info!("proc {} - starting...", config.public.self_rank);
     loop {
         let (mut stream, _) = listener.accept().await.unwrap();
 
@@ -81,6 +146,8 @@ pub async fn run_register_process(config: Configuration) {
             continue
         }
 
+        log::info!("[proc {}]: header[7]: {}", config.public.self_rank, header[7]);
+
         // let content : &mut Vec<u8> = if header[7] == 0x1 {read_content} else {write_content};
         let mut content : Vec<u8> = match header[7] {
             0x1 => {vec![0_u8; 16]}, // client read
@@ -97,6 +164,14 @@ pub async fn run_register_process(config: Configuration) {
             .read_exact(&mut content)
             .await
             .expect("Less data then expected");
+
+        // TODO REMOVE ME
+        for i in 0..content.len() - 3 {
+            if &MAGIC_NUMBER as &[u8] == &content[i..i+4 as usize] {
+                assert!(false);
+            }
+        }
+
         stream
             .read_exact(hmac_signature)
             .await
@@ -153,6 +228,7 @@ pub async fn run_register_process(config: Configuration) {
                                 code => panic!("internal error: error status code {:?} should be handled before", code),
                             }
                         })).await;
+                        log::info!("co jest");
                     },
                     RegisterCommand::System(cmd) => {
                         register.system_command(cmd).await;
@@ -164,6 +240,9 @@ pub async fn run_register_process(config: Configuration) {
                 continue;
             }
         }
+
+        // tokio::time::sleep(Duration::from_millis(300)).await;
+        // summary();
     } // loop
 }
 

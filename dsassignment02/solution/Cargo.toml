@@ -18,6 +18,10 @@ uuid = { version = "0.8", features = ["serde", "v4"] }
 log = "*"
 async-channel = "1.5"
 
+# external:
+lazy_static = "1.4.0"
+
+
 [lib]
 name = "assignment_2_solution"
 path = "src/lib.rs"

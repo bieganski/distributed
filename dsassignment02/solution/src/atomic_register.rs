@@ -39,7 +39,7 @@ pub mod atomic_register_public {
         let state = SystemNodeState{
             ts: Ts(0),
             wr: Rank(self_ident),
-            val: SectorVec(Vec::new()),
+            val: SectorVec(vec![0x62; 4096]),
             writeval: SectorVec(Vec::new()),
             readval: SectorVec(Vec::new()),
             rid: RequestId(0),
@@ -388,7 +388,6 @@ pub mod atomic_register_public {
                     let op_complete = None;
                     let op_complete = std::mem::replace(&mut self.state.operation_complete, op_complete);
                     
-                    log::info!("trying to call 'op_complete' (if you see this, probably you want to remove me at {} line.", line!());
                     (op_complete.unwrap())(OperationComplete{
                         status_code: StatusCode::Ok,
                         request_identifier: self.state.rid.0,

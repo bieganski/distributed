@@ -5,7 +5,11 @@ pub mod register_client_public {
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpStream;
     use crate::domain::RegisterCommand;
-    use std::time::Duration;
+    
+    // Hmac uses also sha2 crate.
+    use hmac::{Hmac, Mac, NewMac};
+    use sha2::Sha256;
+
 
     #[async_trait::async_trait]
     /// We do not need any public implementation of this trait. It is there for use
@@ -31,22 +35,21 @@ pub mod register_client_public {
 
     pub struct BasicRegisterClient {
         tcp_locations: Vec<(String, u16)>,
+        hmac_system_key: [u8; 64],
     }
 
     impl BasicRegisterClient {
-        pub fn new(tcp_locations: Vec<(String, u16)>,) -> Self {
+        pub fn new(tcp_locations: Vec<(String, u16)>, hmac_system_key: [u8; 64],) -> Self {
             BasicRegisterClient{
                 tcp_locations,
+                hmac_system_key,
             }
         }
     }
 
     // #[async_trait::async_trait]
-    impl BasicRegisterClient {
-        #[allow(dead_code)]
-        const TIMEOUT : Duration = Duration::from_millis(500);
-        
-        async fn serialize(cmd : Arc<SystemRegisterCommand>) ->Vec<u8> {
+    impl BasicRegisterClient {      
+        async fn serialize(&self, cmd : Arc<SystemRegisterCommand>) ->Vec<u8> {
             let mut serialized_msg = vec![];
             safe_unwrap!(
                 serialize_register_command(
@@ -54,6 +57,12 @@ pub mod register_client_public {
                         (*cmd).clone()), 
                     &mut serialized_msg)
             );
+            // TODO tu jestem
+            // brakuje sprawdzania system_key
+            let mut mac = Hmac::<Sha256>::new_varkey(&self.hmac_system_key).expect("HMAC can take key of any size");
+            mac.update(&serialized_msg);
+            let signature = mac.finalize().into_bytes();
+            serialized_msg.extend(signature);
             serialized_msg
         }
     }
@@ -62,7 +71,7 @@ pub mod register_client_public {
     impl RegisterClient for BasicRegisterClient {
 
         async fn send(&self, msg: Send) {
-            let serialized_msg = Self::serialize(msg.cmd).await;
+            let serialized_msg = self.serialize(msg.cmd).await;
 
             let addr = self.tcp_locations[msg.target - 1].clone();
             let mut stream = TcpStream::connect(addr.clone())
@@ -73,7 +82,7 @@ pub mod register_client_public {
         }
 
         async fn broadcast(&self, msg: Broadcast) {
-            let serialized_msg = Self::serialize(msg.cmd).await;
+            let serialized_msg = self.serialize(msg.cmd).await;
 
             for addr in self.tcp_locations.iter() {
                 let mut stream = TcpStream::connect(addr.clone())

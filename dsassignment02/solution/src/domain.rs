@@ -61,6 +61,18 @@ pub struct SystemRegisterCommand {
     pub content: SystemRegisterCommandContent,
 }
 
+impl std::fmt::Display for SystemRegisterCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, 
+            "(\n\tfrom {}\n\tuuid: {}\n\trid:{}\n\tsector: {}\n\t)\n", 
+            self.header.process_identifier, 
+            &self.header.msg_ident.to_string()[..6],
+            self.header.read_ident,
+            self.header.sector_idx
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SystemRegisterCommandContent {
     ReadProc,
