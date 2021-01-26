@@ -45,12 +45,10 @@ pub mod sectors_manager_public {
         }
 
         fn new(path: PathBuf) -> Self {
-            let example_meta : (u64, u8) = (0xdeadbeef, 0xff);
-            let example_meta2 : (u64, u8) = (0, 0);
-            let example_meta3 : (u64, u8) = (1, 1);
+            let example_meta : (u64, u8) = (0xdeadbeef, 0xff); // size is the same for any values
             let meta_record_size = bincode::serialize(&example_meta).unwrap().len();
             
-            Self{
+            Self {
                 path,
                 meta_record_size
             }
@@ -61,9 +59,7 @@ pub mod sectors_manager_public {
     impl SectorsManager for BasicSectorsManager {
 
         async fn read_metadata(&self, idx: SectorIdx) -> (u64, u8) {
-            // let path = self.filepath(idx);
             let path = self.metapath();
-            // let file = tokio::fs::File::open(&path).await; // TODO tu jestem zrobic read and write
             let file = tokio::fs::OpenOptions::new()
                 .write(true)
                 .read(true)

@@ -191,8 +191,8 @@ pub mod transfer_system {
     fn serialize_msg_type(system_msg_type: &SystemRegisterCommandContent) -> u8 {
         match system_msg_type {
             SystemRegisterCommandContent::ReadProc{} => {0x3},
-            SystemRegisterCommandContent::Value{timestamp, write_rank, sector_data} => {0x4},
-            SystemRegisterCommandContent::WriteProc{timestamp, write_rank, data_to_write} => {0x5},
+            SystemRegisterCommandContent::Value{..} => {0x4},
+            SystemRegisterCommandContent::WriteProc{..} => {0x5},
             SystemRegisterCommandContent::Ack{} => {0x6},
         }
     }

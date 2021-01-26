@@ -26,7 +26,7 @@ pub struct PublicConfiguration {
     pub max_sector: u64,
 }
 
-#[derive(Clone, Eq, PartialEq, Debug)]
+#[derive(Clone, Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub struct SectorVec(pub Vec<u8>);
 
 pub type SectorIdx = u64;
@@ -50,7 +50,7 @@ pub enum StatusCode {
     InvalidSectorIndex,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClientRegisterCommand {
     pub header: ClientCommandHeader,
     pub content: ClientRegisterCommandContent,
@@ -102,7 +102,7 @@ pub enum SystemRegisterCommandContent {
     Ack,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClientRegisterCommandContent {
     Read,
     Write { data: SectorVec },

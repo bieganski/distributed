@@ -41,6 +41,11 @@ impl BasicStableStorage {
         Self{root: meta_storage}
     }
 
+    pub async fn drop(&self, key: &str) -> Result<(), std::io::Error> {
+        let fname = self.key_to_fname(key);
+        tokio::fs::remove_file(fname).await
+    }
+
     fn calculate_hash<T: Hash>(t: &T) -> u64 {
         let mut s = DefaultHasher::new();
         t.hash(&mut s);

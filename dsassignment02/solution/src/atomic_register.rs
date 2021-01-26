@@ -36,7 +36,7 @@ pub mod atomic_register_public {
         processes_count: usize,
     ) -> (Box<dyn AtomicRegister>, Option<ClientRegisterCommand>) {
         build_atomic_register_generic(self_ident, metadata, register_client, sectors_manager, processes_count, 
-            Arc::new(tokio::sync::Mutex::new(HashMap::new())), 0xdeadbeef).await
+            Arc::new(tokio::sync::Mutex::new(HashMap::new())), 0).await
     }
     
     
@@ -49,7 +49,13 @@ pub mod atomic_register_public {
         msg_owners: Arc<tokio::sync::Mutex<HashMap<uuid::Uuid, usize>>>,
         my_idx: usize,
     ) -> (Box<dyn AtomicRegister>, Option<ClientRegisterCommand>) {
-        // TODO that None below handling
+        
+        let maybe_pending_cmd = metadata.get(&format!("pending{}", my_idx)).await;
+        let pending_cmd = match maybe_pending_cmd {
+            None => None,
+            Some(bytes) => bincode::deserialize(&bytes).unwrap(),
+        };
+
         let state = SystemNodeState{
             ts: Ts(0),
             wr: Rank(self_ident),
@@ -64,7 +70,7 @@ pub mod atomic_register_public {
             msg_owners,
             my_idx,
         };
-        (Box::new(BasicAtomicRegister{self_id: Rank(self_ident), state, metadata, register_client, sectors_manager, processes_count}), None)
+        (Box::new(BasicAtomicRegister{self_id: Rank(self_ident), state, metadata, register_client, sectors_manager, processes_count}), pending_cmd)
         
         // enable this for testing 'client_response', however it should work with BasicAtomicRegister, providing that it's mature enough 
         // (
@@ -333,6 +339,10 @@ pub mod atomic_register_public {
                             })
                         }).await;
                     } else {
+                        // TODO 
+                        // rid := rid + 1;
+                        // store(rid);
+                        // https://moodle.mimuw.edu.pl/mod/forum/discuss.php?d=4292#p10790
                         self.register_client.broadcast(crate::Broadcast{
                             cmd: Arc::new(SystemRegisterCommand{
                                     header: response_header.clone(),
