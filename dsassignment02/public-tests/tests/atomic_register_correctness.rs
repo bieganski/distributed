@@ -17,8 +17,8 @@ use tokio::task::JoinHandle;
 use std::convert::TryInto;
 
 
-// #[tokio::test]
-// #[timeout(400000)]
+#[tokio::test]
+#[timeout(4000)]
 async fn multiple_nodes() {
     let _ = env_logger::builder().is_test(true).try_init();
 
@@ -58,6 +58,14 @@ async fn multiple_nodes() {
     let data1 = vec![0x66_u8; 4096];
     let data2 = vec![0x6e_u8; 4096];
 
+    let read_cmd0 = RegisterCommand::Client(ClientRegisterCommand {
+        header: ClientCommandHeader {
+            request_identifier: request_identifier - 1,
+            sector_idx: 12,
+        },
+        content: ClientRegisterCommandContent::Read{},
+    });
+
     let write_cmd1 = RegisterCommand::Client(ClientRegisterCommand {
         header: ClientCommandHeader {
             request_identifier,
@@ -94,21 +102,34 @@ async fn multiple_nodes() {
         content: ClientRegisterCommandContent::Read{},
     });
 
-    // why not try with rank=2?
-    let mut stream = TcpStream::connect(addrs[1].clone())
-        .await
-        .expect("Could not connect to TCP port");
-
-    // when
-    send_cmd(&write_cmd1, &mut stream, &hmac_client_key).await;
-
-
     const EXPECTED_WRITE_RESPONSES_SIZE: usize = 48;
     const EXPECTED_READ_RESPONSES_SIZE: usize  = 48 + 4096;
 
     let mut write_response_buf = [0_u8; EXPECTED_WRITE_RESPONSES_SIZE];
     let mut read_response_buf = [0_u8; EXPECTED_READ_RESPONSES_SIZE];
+
+    let compare = |buf : Vec<u8>, data| {
+        assert_eq!(&data, &buf[16..(16+4096)]);
+        // println!("{:?}", data);
+    };
+
+
+    // why not try with rank=2?
+    let mut stream = TcpStream::connect(addrs[1].clone())
+        .await
+        .expect("Could not connect to TCP port");
+
+    send_cmd(&read_cmd0, &mut stream, &hmac_client_key).await;
+
+    stream
+        .read_exact(&mut read_response_buf)
+        .await
+        .expect("Less data then expected");
     
+    compare(read_response_buf.to_vec(), vec![0; 4096]);
+
+    send_cmd(&write_cmd1, &mut stream, &hmac_client_key).await;
+
     stream
         .read_exact(&mut write_response_buf)
         .await
@@ -121,6 +142,23 @@ async fn multiple_nodes() {
         .await
         .expect("Less data then expected");
 
+    compare(read_response_buf.to_vec(), data1);
+    
+    send_cmd(&write_cmd2, &mut stream, &hmac_client_key).await;
+
+    stream
+        .read_exact(&mut write_response_buf)
+        .await
+        .expect("Less data then expected");
+
+    send_cmd(&read_cmd2, &mut stream, &hmac_client_key).await;
+
+    stream
+        .read_exact(&mut read_response_buf)
+        .await
+        .expect("Less data then expected");
+    
+    compare(read_response_buf.to_vec(), data2);
 }
 
 type HmacSha256 = Hmac<Sha256>;

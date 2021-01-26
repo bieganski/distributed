@@ -53,7 +53,7 @@ pub mod atomic_register_public {
         let state = SystemNodeState{
             ts: Ts(0),
             wr: Rank(self_ident),
-            val: SectorVec(vec![0x62; 4096]),
+            val: SectorVec(vec![0x0; 4096]),
             writeval: SectorVec(Vec::new()),
             readval: SectorVec(Vec::new()),
             rid: RequestId(0),

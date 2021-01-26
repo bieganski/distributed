@@ -17,8 +17,6 @@ use tokio::task::JoinHandle;
 use std::convert::TryInto;
 
 // TODO tu jestem
-// * dodać sector manager (na razie 1)
-// * przetestować + stworzyć test corectness
 // * dodać crash recovery
 // * zrobić test crash recovery
 // * zrobić ostatnie poprawki

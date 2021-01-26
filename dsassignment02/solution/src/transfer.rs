@@ -54,7 +54,6 @@ pub mod transfer_public {
 
         // split by message type
         if &read_buf[7] >= &0x3 {
-            println!("omg");
             return transfer_system::deserialize_system_command(&mut read_buf.as_slice());
         }
 
