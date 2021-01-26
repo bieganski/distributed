@@ -53,7 +53,6 @@ pub mod atomic_register_public {
         let state = SystemNodeState{
             ts: Ts(0),
             wr: Rank(self_ident),
-            val: SectorVec(vec![0x0; 4096]),
             writeval: SectorVec(Vec::new()),
             readval: SectorVec(Vec::new()),
             rid: RequestId(0),
@@ -105,7 +104,6 @@ pub mod atomic_register_public {
         wr: Rank,
         writeval: SectorVec,
         readval: SectorVec,
-        val: SectorVec,
         rid: RequestId,
         readlist: HashMap<Rank, (Ts, Rank, SectorVec)>,
         acklist: HashSet<Rank>,
@@ -273,8 +271,8 @@ pub mod atomic_register_public {
             match cmd.content {
                 SystemRegisterCommandContent::ReadProc => {
                     log::info!("[{}][system_command] captured ReadProc from {}", self.self_id.0, cmd.header.process_identifier);
-                    // TODOO jakie value?
                     // trigger < pl, Send | p, [VALUE, r, ts, wr, val] >;
+                    let val = self.sectors_manager.read_data(cmd.header.sector_idx).await;
                     self.register_client.send(crate::Send{
                         target: cmd.header.process_identifier as usize, // TODO u8 cast
                         cmd: Arc::new(SystemRegisterCommand {
@@ -282,7 +280,7 @@ pub mod atomic_register_public {
                             content: SystemRegisterCommandContent::Value {
                                 timestamp: self.state.ts.0,
                                 write_rank: self.state.wr.0,
-                                sector_data: self.state.val.clone(),
+                                sector_data: val,
                             },
                         })
                     }).await;
@@ -360,7 +358,7 @@ pub mod atomic_register_public {
                     if (timestamp, write_rank) > (self.state.ts.0, self.state.wr.0) {
                         self.state.ts = Ts(timestamp);
                         self.state.wr = Rank(write_rank);
-                        self.state.val = data_to_write;
+                        self.sectors_manager.write(cmd.header.sector_idx, &(data_to_write, timestamp, write_rank)).await;
 
                         vec![
                             self.metadata.put("wr",  &self.state.wr.0.to_ne_bytes()).await,
