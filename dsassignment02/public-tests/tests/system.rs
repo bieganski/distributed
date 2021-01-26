@@ -42,8 +42,8 @@ async fn simple_system() {
     tokio::join!(handle);
 }
 
-// #[tokio::test]
-// #[timeout(4000)]
+#[tokio::test]
+#[timeout(4000)]
 async fn single_process_system_completes_operations() {
     // given
     let hmac_client_key = [5; 32];

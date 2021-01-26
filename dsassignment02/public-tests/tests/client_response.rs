@@ -16,7 +16,7 @@ static HMAC_TAG_SIZE: usize = 32;
 
 
 #[tokio::test]
-#[timeout(4000)]
+#[timeout(2000)]
 async fn client_response_ok() {
     let _ = env_logger::builder().is_test(true).try_init();
 

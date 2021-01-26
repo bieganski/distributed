@@ -28,12 +28,13 @@ use std::sync::{Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use tokio::sync::Mutex;
 
 // Hmac uses also sha2 crate.
 use hmac::{Hmac, Mac, NewMac};
 use sha2::Sha256;
 use log;
+use tokio::sync::mpsc::{channel, unbounded_channel, UnboundedSender, UnboundedReceiver};
 
 
 use std::io::{Write, BufWriter};
@@ -42,11 +43,18 @@ static HMAC_TAG_SIZE: usize = 32;
 
 use lazy_static::lazy_static;
 
-lazy_static! {
-    pub static ref SENT_BCAST:  Mutex<HashMap<u8, Vec< SystemRegisterCommand>>>       = Mutex::new(HashMap::new());
-    pub static ref SENT_SINGLE: Mutex<HashMap<u8, Vec<(SystemRegisterCommand, u8)>>>  = Mutex::new(HashMap::new()); // (cmd, target)
-}
+// aaaa
+// [208, 113, 246, 189, 248, 159, 121, 131, 174, 124, 11, 29, 85, 232, 232, 192, 251, 145, 248, 98, 22, 173, 198, 87, 250, 129, 106, 138, 60, 63, 144, 192]
 
+// 5
+// [208, 44, 139, 113, 235, 130, 112, 216, 61, 51, 205, 224, 101, 27, 220, 123, 244, 158, 170, 150, 137, 97, 254, 144, 2, 103, 175, 53, 114, 29, 36, 174]
+
+
+
+lazy_static! {
+    pub static ref SENT_BCAST:  std::sync::Mutex<HashMap<u8, Vec< SystemRegisterCommand>>>       = std::sync::Mutex::new(HashMap::new());
+    pub static ref SENT_SINGLE: std::sync::Mutex<HashMap<u8, Vec<(SystemRegisterCommand, u8)>>>  = std::sync::Mutex::new(HashMap::new()); // (cmd, target)
+}
 
 pub struct TestRegisterClient {
     rank: u8,
@@ -87,7 +95,7 @@ pub fn summary() {
 #[async_trait::async_trait]
 impl RegisterClient for TestRegisterClient {
     async fn send(&self, msg: Send) {
-        SENT_SINGLE.lock().unwrap().get_mut(&self.rank).unwrap().push(((*msg.cmd).clone(), msg.target as u8));
+        (*std::sync::Mutex::lock(&SENT_SINGLE).unwrap()).get_mut(&self.rank).unwrap().push(((*msg.cmd).clone(), msg.target as u8));
         self.register_client.send(msg).await
     }
 
@@ -98,155 +106,268 @@ impl RegisterClient for TestRegisterClient {
 }
 
 
+const NUM_WORKERS: usize = 2;
 
-pub async fn run_register_process(config: Configuration) {
-    let my_addr = &config.public.tcp_locations[config.public.self_rank as usize - 1];
+struct Ready{who: usize}
+
+pub async fn run_register_process(config_save: Configuration) {
+
+    let my_addr = &config_save.public.tcp_locations[config_save.public.self_rank as usize - 1];
     let listener = TcpListener::bind(my_addr)
         .await
         .unwrap();
 
-    let register_client = BasicRegisterClient::new(config.public.tcp_locations.clone(), config.hmac_system_key);
-    let (mut register, pending_cmd) = build_atomic_register(
-        config.public.self_rank,
-        Box::new(BasicStableStorage::new(config.public.storage_dir.clone()).await),
-        Arc::new(TestRegisterClient::new(Box::new(register_client), config.public.self_rank)),
-        build_sectors_manager(config.public.storage_dir),
-        config.public.tcp_locations.len(),
-    )
-    .await;
+    let mut atomic_registers : Vec<Box<dyn AtomicRegister>> = vec![];
 
-    let mut header = [0_u8; 8];
-    let hmac_signature : &mut Vec<u8> = &mut vec![0_u8; HMAC_TAG_SIZE];
+    let register_client = BasicRegisterClient::new(config_save.public.tcp_locations.clone(), config_save.hmac_system_key);
+    let register_client = Arc::new(TestRegisterClient::new(Box::new(register_client), config_save.public.self_rank));
+    // let register_client = Arc::new(register_client);
+    // TODO niżej zawiesić się na rdy_rx
+    let (rdy_tx, rdy_rx) = unbounded_channel();
+    let rdy_rx = Arc::new(Mutex::new(rdy_rx));
+    let cmd_txs = Arc::new(Mutex::new(vec![]));
+    let ret_rxs = Arc::new(Mutex::new(vec![]));
 
-    // aaaa
-    // [208, 113, 246, 189, 248, 159, 121, 131, 174, 124, 11, 29, 85, 232, 232, 192, 251, 145, 248, 98, 22, 173, 198, 87, 250, 129, 106, 138, 60, 63, 144, 192]
+    let msg_owners : Arc<Mutex<HashMap<uuid::Uuid, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
-    // 5
-    // [208, 44, 139, 113, 235, 130, 112, 216, 61, 51, 205, 224, 101, 27, 220, 123, 244, 158, 170, 150, 137, 97, 254, 144, 2, 103, 175, 53, 114, 29, 36, 174]
+    for idx in 0..NUM_WORKERS {
+        
+        let config = config_save.clone();
 
-    log::info!("proc {} - starting...", config.public.self_rank);
+        let (mut register, pending_cmd) = build_atomic_register_generic( // TODO handle pending_cmd
+            config.public.self_rank,
+            Box::new(BasicStableStorage::new(config.public.storage_dir.clone()).await),
+            register_client.clone(),
+            build_sectors_manager(config.public.storage_dir),
+            config.public.tcp_locations.len(),
+            msg_owners.clone(), 
+            idx
+        )
+        .await;
+
+        let config = config_save.clone();
+        let (cmd_tx, mut cmd_rx) = unbounded_channel();
+        cmd_txs.lock().await.push(cmd_tx);
+
+        // TODO handle ret_rx
+        let (ret_tx, ret_rx) = unbounded_channel();
+        ret_rxs.lock().await.push(ret_rx);
+
+        let rdy_tx = rdy_tx.clone();
+        tokio::spawn(async move {
+            log::info!("worker {} starts loop...", idx);
+            rdy_tx.send(Ready{who: idx}).unwrap_or_else(|_| {log::info!("BAD THINGS HAPPENED")});
+            loop {
+                let cmd = cmd_rx.recv().await.unwrap();
+
+                match cmd {
+                    RegisterCommand::Client(cmd) => {
+                        log::info!("Worker received Client command...");
+                        let hmac_client_key = config.hmac_client_key.clone();
+                        let ret_tx = ret_tx.clone();
+                        let rdy_tx = rdy_tx.clone();
+                        register.client_command(cmd.clone(), Box::new(move |op_complete: domain::OperationComplete| {
+                            log::info!("~~~~~~~~~~~ MATINEK LOOK AT ME FIRST!!!!!!! ~~~~~~~~~~");
+                            ret_tx.send(op_complete.op_return).unwrap_or_else(|_| {log::info!("BAD THINGS HAPPENED")});
+                            rdy_tx.send(Ready{who: idx}).unwrap_or_else(|_| {log::info!("BAD THINGS HAPPENED")});
+                        })).await;
+                        // TODO
+                    },
+                    RegisterCommand::System(cmd) => {
+                        log::info!("-------- REGISTER parsed!");
+                        register.system_command(cmd).await;
+                    },
+                }
+            }
+        });
+    }
+    
+    let act_register : Arc<std::sync::Mutex<usize>> = Arc::new(std::sync::Mutex::new(0));
+
     loop {
         let (mut stream, _) = listener.accept().await.unwrap();
+        let config = config_save.clone();
+        let register_client = BasicRegisterClient::new(config.public.tcp_locations.clone(), config.hmac_system_key);
+        
+        let config = config_save.clone();
+        let hmac_client_key = config.hmac_client_key.clone();
+        let rdy_rx = rdy_rx.clone();
+        let cmd_txs = cmd_txs.clone();
+        let ret_rxs = ret_rxs.clone();
+        let act_register = act_register.clone();
 
-        stream
-            .read_exact(&mut header)
-            .await
-            .expect("Less data then expected");
-    
-        if header[..4] != MAGIC_NUMBER {
-            log::error!("[run_register_process] wrong Magic Number!");
-            continue;
-        }
-
-        let supported_msg_types = 1..7;
-
-        if ! supported_msg_types.contains(&header[7]) {
-            log::error!("[run_register_process] wrong message type! Got {:?}", header[7]);
-            continue
-        }
-
-        log::info!("[proc {}]: header[7]: {}", config.public.self_rank, header[7]);
-
-        // let content : &mut Vec<u8> = if header[7] == 0x1 {read_content} else {write_content};
-        let mut content : Vec<u8> = match header[7] {
-            0x1 => {vec![0_u8; 16]}, // client read
-            0x2 => {vec![0_u8; 16 + 4096]}, // client write
+        let msg_owners = msg_owners.clone();
+        tokio::spawn(async move {
+            let mut header = [0_u8; 8];
+            let mut hmac_signature : &mut Vec<u8> = &mut vec![0_u8; HMAC_TAG_SIZE];
+            let msg_owners = msg_owners.clone();
+            let ret_rxs = ret_rxs.clone();
             
-            0x3 => {vec![0_u8; 32 + 0]}, // system read, no content
-            0x4 => {vec![0_u8; 32 + 16 + 4096]}, // system value
-            0x5 => {vec![0_u8; 32 + 16 + 4096]}, // system write
-            0x6 => {vec![0_u8; 32 + 0]}, // system ack, no content
-            _ => {panic!("internal error: i should have been handled earlier..")},
-        };
+            loop {
+                let num = stream.peek(&mut header).await.unwrap();
 
-        stream
-            .read_exact(&mut content)
-            .await
-            .expect("Less data then expected");
+                if num == 0 {
+                    log::info!("EXTREMELY IMPORTANT - MATINEK, REMOVE ME IF U SURE. connection closed.");
+                    return ();
+                }
 
-        // TODO REMOVE ME
-        for i in 0..content.len() - 3 {
-            if &MAGIC_NUMBER as &[u8] == &content[i..i+4 as usize] {
-                assert!(false);
-            }
-        }
+                stream
+                    .read_exact(&mut header)
+                    .await
+                    .expect("Less data then expected");
+            
+                if header[..4] != MAGIC_NUMBER {
+                    log::error!("[run_register_process] wrong Magic Number!");
+                    continue;
+                }
+        
+                let supported_msg_types = 1..7;
+        
+                if ! supported_msg_types.contains(&header[7]) {
+                    log::error!("[run_register_process] wrong message type! Got {:?}", header[7]);
+                    continue
+                }
+        
+                log::info!("[proc {}]: header[7]: {}", config.public.self_rank, header[7]);
+        
+                // let content : &mut Vec<u8> = if header[7] == 0x1 {read_content} else {write_content};
+                let mut content : Vec<u8> = match header[7] {
+                    0x1 => {vec![0_u8; 16]}, // client read
+                    0x2 => {vec![0_u8; 16 + 4096]}, // client write
+                    
+                    0x3 => {vec![0_u8; 32 + 0]}, // system read, no content
+                    0x4 => {vec![0_u8; 32 + 16 + 4096]}, // system value
+                    0x5 => {vec![0_u8; 32 + 16 + 4096]}, // system write
+                    0x6 => {vec![0_u8; 32 + 0]}, // system ack, no content
+                    _ => {panic!("internal error: i should have been handled earlier..")},
+                };
+        
+                stream
+                    .read_exact(&mut content)
+                    .await
+                    .expect("Less data then expected");
+        
+                // TODO REMOVE ME
+                for i in 0..content.len() - 3 {
+                    if &MAGIC_NUMBER as &[u8] == &content[i..i+4 as usize] {
+                        assert!(false);
+                    }
+                }
+        
+                stream
+                    .read_exact(&mut hmac_signature)
+                    .await
+                    .expect("Less data then expected");
 
-        stream
-            .read_exact(hmac_signature)
-            .await
-            .expect("Less data then expected");
+                let mut status_code = StatusCode::Ok;
 
-        let mut command = std::io::Read::chain(&header as &[u8], &content as &[u8]);
+                let mut command = std::io::Read::chain(&header as &[u8], &content as &[u8]);
+                let cmd = deserialize_register_command_send(&mut command).unwrap();
+                let mut mac = match cmd {
+                    RegisterCommand::Client(_) => {
+                        Hmac::<Sha256>::new_varkey(&config.hmac_client_key).expect("HMAC can take key of any size")
+                    },
+                    RegisterCommand::System(_) => {
+                        Hmac::<Sha256>::new_varkey(&config.hmac_system_key).expect("HMAC can take key of any size")
+                    }
+                };
+                mac.update(&header);
+                mac.update(&content);
 
-        match deserialize_register_command_send(&mut command) {
-            Ok(reg_cmd) => {
-                log::info!("[run_register_process] message parsed successfully");
-                match reg_cmd {
-                    RegisterCommand::Client(cmd) => {
-                        let mut status_code = StatusCode::Ok;
+                let proper_mac = mac.finalize().into_bytes();
+                if hmac_signature.as_slice() != &*proper_mac {
+                    log::error!("wrong HMAC signature! \ngot: {:?}\nexptected: {:?}", hmac_signature.as_slice(), &*proper_mac);
+                    status_code = StatusCode::AuthFailure;
 
-                        let mut mac = Hmac::<Sha256>::new_varkey(&config.hmac_client_key).expect("HMAC can take key of any size");
-                        mac.update(&header);
-                        mac.update(&content);
-                        let proper_mac = mac.finalize().into_bytes();
-                        if hmac_signature.as_slice() != &*proper_mac {
-                            log::error!("wrong HMAC signature! \ngot: {:?}\nexptected: {:?}", hmac_signature.as_slice(), &*proper_mac);
-                            status_code = StatusCode::AuthFailure;
-                        }
-                
-                        if cmd.header.sector_idx >= config.public.max_sector {
-                            log::error!("[run_register_process] Too high sector_idx requested! Max is {}, Requested: {}", cmd.header.sector_idx, config.public.max_sector);
-                            status_code = StatusCode::InvalidSectorIndex;
-                        }
-
-                        if status_code != StatusCode::Ok {
-                            // too high idx or wrong HMAC 
+                    match cmd {
+                        RegisterCommand::Client(cmd) => {
                             let op_return : OperationReturn = match cmd.content {
                                 ClientRegisterCommandContent::Read => OperationReturn::Read(ReadReturn{read_data: None}),
                                 ClientRegisterCommandContent::Write {data: _} => OperationReturn::Write{},
                             };
-                            send_response_to_client(stream, cmd.clone(), status_code, op_return, &config.hmac_client_key).await;
+                            send_response_to_client(&mut stream, cmd.clone(), status_code, op_return, &config.hmac_client_key).await;
+                            continue;
+                        },
+                        RegisterCommand::System(cmd) => {
+                            log::info!("received System Command with wrong HMAC tag, abandoning..");
+                            continue;
+                        },
+                    }
+                }
+
+                match cmd.clone() {
+                    RegisterCommand::Client(client_cmd) => {
+                        if client_cmd.header.sector_idx >= config.public.max_sector {
+                            log::error!("[run_register_process] Too high sector_idx requested! Max is {}, Requested: {}", client_cmd.header.sector_idx, config.public.max_sector);
+                            status_code = StatusCode::InvalidSectorIndex;
+                            let op_return : OperationReturn = match client_cmd.content {
+                                ClientRegisterCommandContent::Read => OperationReturn::Read(ReadReturn{read_data: None}),
+                                ClientRegisterCommandContent::Write {data: _} => OperationReturn::Write{},
+                            };
+                            send_response_to_client(&mut stream, client_cmd.clone(), status_code, op_return, &config.hmac_client_key).await;
                             continue;
                         }
-
-                        let hmac_client_key = config.hmac_client_key.clone();
-                        register.client_command(cmd.clone(), Box::new(move |op_complete: domain::OperationComplete| {
-                            match op_complete.status_code {
-                                status_code@StatusCode::Ok => {
-                                    tokio::spawn(async move {
-                                        send_response_to_client(
-                                            stream,
-                                            cmd,
-                                            status_code,
-                                            op_complete.op_return,
-                                            &hmac_client_key,
-                                            ).await;
-                                    });
-                                
-                                },
-                                code => panic!("internal error: error status code {:?} should be handled before", code),
+                        
+                        // here we know that clinet command is properly formed. 
+                        log::info!("client msg recognized as proper.. processing started.");
+                        
+                        // worker receivs well-formed message to handle.
+                        
+                        // when
+                        let mut who = 1111;
+                        loop {
+                            let Ready{who: whoo} = rdy_rx.lock().await.recv().await.unwrap();
+                            log::info!("{} claims that is ready, maybe abandoning...", whoo);
+                            if whoo == 0 {
+                                who = whoo;
+                                break;
                             }
-                        })).await;
-                        log::info!("co jest");
-                    },
-                    RegisterCommand::System(cmd) => {
-                        register.system_command(cmd).await;
-                    },
-                }
-            },
-            Err(_) => {
-                log::error!("[run_register_process] message parsing failed!");
-                continue;
-            }
-        }
+                        }
 
-        // tokio::time::sleep(Duration::from_millis(300)).await;
-        // summary();
-    } // loop
+                        (*cmd_txs.lock().await).get_mut(who).unwrap().send(cmd).unwrap();
+
+                        log::info!("sent client cmd for processing to atomic register {} ..", who);
+                
+                        let ret_rxs = &mut (*ret_rxs.lock().await);
+                        let ret_rx = ret_rxs.get_mut(who).unwrap();
+                        let op_return = ret_rx.recv().await.unwrap();
+
+                        send_response_to_client(
+                            &mut stream,
+                            client_cmd,
+                            StatusCode::Ok,
+                            op_return,
+                            &hmac_client_key,
+                        ).await;
+                    },
+                    RegisterCommand::System(system_cmd) => {
+                        log::info!("DOSTALEM SYSTEM MSG :)");
+                        log::info!("looking for {:?} :)", &system_cmd.header.msg_ident);
+                        let msg_owners = &(*msg_owners.lock().await);
+                        for (k, v) in msg_owners.iter( ) {
+                            log::info!("AA: {:?}, {:?}", k, v);
+                        }
+                        let who = match msg_owners.get(&system_cmd.header.msg_ident) {
+                            Some(who) => *who,
+                            None => {
+                                let mut guard = act_register.lock().unwrap();
+                                let val = *guard % NUM_WORKERS;
+                                *guard += 1;
+                                val
+                            },
+                        };
+                        (*cmd_txs.lock().await).get_mut(who).unwrap().send(cmd).unwrap();
+
+                    },
+                };
+
+            }; // loop
+        });
+    }
 }
 
 async fn send_response_to_client(
-    mut stream: tokio::net::TcpStream, 
+    stream: &mut tokio::net::TcpStream, 
     cmd: ClientRegisterCommand,
     status_code: StatusCode,
     op_return: OperationReturn,

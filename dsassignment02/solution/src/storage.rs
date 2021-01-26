@@ -20,6 +20,7 @@ pub mod stable_storage_public {
     }
 }
 
+#[derive(Clone)]
 pub struct BasicStableStorage {
     pub root: PathBuf,
 }
@@ -29,7 +30,7 @@ impl BasicStableStorage {
         let mut meta_storage = PathBuf::new();
         meta_storage.push(root.clone());
         meta_storage.push("meta");
-        tokio::fs::create_dir(meta_storage.clone()).await.unwrap(); // TODO if it actually DOES exist DO NOT throw error
+        tokio::fs::create_dir(meta_storage.clone()).await.unwrap_or_else(|_| ()); // TODO if it actually DOES exist DO NOT throw error
         Self{root: meta_storage}
     }
 

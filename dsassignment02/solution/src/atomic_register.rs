@@ -35,6 +35,20 @@ pub mod atomic_register_public {
         sectors_manager: Arc<dyn SectorsManager>,
         processes_count: usize,
     ) -> (Box<dyn AtomicRegister>, Option<ClientRegisterCommand>) {
+        build_atomic_register_generic(self_ident, metadata, register_client, sectors_manager, processes_count, 
+            Arc::new(tokio::sync::Mutex::new(HashMap::new())), 0xdeadbeef).await
+    }
+    
+    
+    pub async fn build_atomic_register_generic(
+        self_ident: u8,
+        metadata: Box<dyn StableStorage>,
+        register_client: Arc<dyn RegisterClient>,
+        sectors_manager: Arc<dyn SectorsManager>,
+        processes_count: usize,
+        msg_owners: Arc<tokio::sync::Mutex<HashMap<uuid::Uuid, usize>>>,
+        my_idx: usize,
+    ) -> (Box<dyn AtomicRegister>, Option<ClientRegisterCommand>) {
         // TODO that None below handling
         let state = SystemNodeState{
             ts: Ts(0),
@@ -48,10 +62,12 @@ pub mod atomic_register_public {
             reading: false,
             writing: false,
             operation_complete: None,
+            msg_owners,
+            my_idx,
         };
         (Box::new(BasicAtomicRegister{self_id: Rank(self_ident), state, metadata, register_client, sectors_manager, processes_count}), None)
         
-        // enable this for client_response test
+        // enable this for testing 'client_response', however it should work with BasicAtomicRegister, providing that it's mature enough 
         // (
         //     Box::new(TestClientOkAtomicRegister{}), 
         //     None
@@ -96,6 +112,8 @@ pub mod atomic_register_public {
         reading: bool,
         writing: bool,
         operation_complete: Option<Box<dyn FnOnce(OperationComplete) + Send + Sync>>,
+        msg_owners: Arc<tokio::sync::Mutex<HashMap<uuid::Uuid, usize>>>, // used only when using multiple registers
+        my_idx: usize, // used only when using multiple registers
     }
 
     struct BasicAtomicRegister {
@@ -153,7 +171,7 @@ pub mod atomic_register_public {
             let mut max_id = Rank(0);
             for (key, (ts, wr, _)) in &self.state.readlist {
                 if (ts.0, wr.0) > ((max.0).0, (max.1).0) {
-                    max_id = Rank(key.0);
+                    max_id = *key;
                     max = (*ts, *wr)
                 }
             }
@@ -170,6 +188,9 @@ pub mod atomic_register_public {
             cmd: ClientRegisterCommand,
             operation_complete: Box<dyn FnOnce(OperationComplete) + Send + Sync>) {
                 self.state.operation_complete = Some(operation_complete);
+                // TODOO sprawdź czy reading || writing
+                assert_eq!(self.state.writing, false);
+                // TODOO po co te UUID?
                 match cmd.content {
                     ClientRegisterCommandContent::Read => {
                         log::info!("[client_command] captured Client Read (from {})", self.self_id.0);
@@ -184,13 +205,14 @@ pub mod atomic_register_public {
                         self.state.readlist.drain();
                         self.state.acklist.drain();
                         self.state.reading = true;
-                        assert_eq!(self.state.writing, false);
+                        let msg_ident = uuid::Uuid::new_v4();
+                        self.state.msg_owners.lock().await.insert(msg_ident, self.state.my_idx);
                         log::info!("[client_command][client-system] sending broadcast ReadProc (from {})", self.self_id.0);
                         self.register_client.broadcast(crate::Broadcast{
                             cmd: Arc::new(SystemRegisterCommand{
                                  header: SystemCommandHeader{
                                      process_identifier: self.self_id.0,
-                                     msg_ident: uuid::Uuid::new_v4(),
+                                     msg_ident,
                                      read_ident: self.state.rid.0,
                                      sector_idx: cmd.header.sector_idx, 
                                  },
@@ -199,7 +221,7 @@ pub mod atomic_register_public {
                         }).await;
                     },
                     ClientRegisterCommandContent::Write{data} => {
-                        log::info!("[client_command] captured Client Write (from {})", self.self_id.0);
+                        log::info!("[{}][client_command] captured Client Write", self.self_id.0);
                         // rid := rid + 1;
                         // writeval := v;
                         // acklist := [ _ ] `of length` N;
@@ -221,12 +243,14 @@ pub mod atomic_register_public {
                             self.metadata.put("writing", &bincode::serialize(&self.state.writing).unwrap()).await,
                         ].into_iter().for_each(|x| {safe_unwrap!(x)});
 
-                        log::info!("[client_command][client-system] sending broadcast ReadProc (from {})", self.self_id.0);
+                        log::info!("[{}][client_command][client-system] sending broadcast ReadProc", self.self_id.0);
+                        let msg_ident = uuid::Uuid::new_v4();
+                        self.state.msg_owners.lock().await.insert(msg_ident, self.state.my_idx);
                         self.register_client.broadcast(crate::Broadcast{
                             cmd: Arc::new(SystemRegisterCommand{
                                  header: SystemCommandHeader{
                                     process_identifier: self.self_id.0,
-                                    msg_ident: uuid::Uuid::new_v4(),
+                                    msg_ident,
                                     read_ident: self.state.rid.0,
                                     sector_idx: cmd.header.sector_idx, 
                                  },
@@ -249,6 +273,7 @@ pub mod atomic_register_public {
             match cmd.content {
                 SystemRegisterCommandContent::ReadProc => {
                     log::info!("[{}][system_command] captured ReadProc from {}", self.self_id.0, cmd.header.process_identifier);
+                    // TODOO jakie value?
                     // trigger < pl, Send | p, [VALUE, r, ts, wr, val] >;
                     self.register_client.send(crate::Send{
                         target: cmd.header.process_identifier as usize, // TODO u8 cast
@@ -265,9 +290,9 @@ pub mod atomic_register_public {
                 SystemRegisterCommandContent::Value{timestamp, write_rank, sector_data} => {
                     log::info!("[{}][system_command] captured Value from {}", self.self_id.0, cmd.header.process_identifier);
                     if cmd.header.read_ident != self.state.rid.0 {
+                        log::info!("WAZNE: RID MISMATCH: {} against {}", cmd.header.read_ident, self.state.rid.0);
                         return ();
                     }
-                    assert_eq!(!false && false, false); // TODO operator priority check
                     if !self.state.reading && !self.state.writing {
                         log::error!("TODO REMOVE ME: test error!: got Value when not performed any action");
                         return ();
@@ -330,6 +355,8 @@ pub mod atomic_register_public {
                     //     store(ts, wr, val);
                     // trigger < pl, Send | p, [ACK, r] >;
 
+                    // TODOO handle val
+
                     if (timestamp, write_rank) > (self.state.ts.0, self.state.wr.0) {
                         self.state.ts = Ts(timestamp);
                         self.state.wr = Rank(write_rank);
@@ -338,7 +365,6 @@ pub mod atomic_register_public {
                         vec![
                             self.metadata.put("wr",  &self.state.wr.0.to_ne_bytes()).await,
                             self.metadata.put("ts", &self.state.ts.0.to_ne_bytes()).await,
-                            self.metadata.put("val", &self.state.val.0).await,
                         ].into_iter().for_each(|x| {safe_unwrap!(x)});
                     }
                     self.register_client.send(crate::Send{
@@ -387,12 +413,17 @@ pub mod atomic_register_public {
                     // that's bad I know
                     let op_complete = None;
                     let op_complete = std::mem::replace(&mut self.state.operation_complete, op_complete);
-                    
-                    (op_complete.unwrap())(OperationComplete{
-                        status_code: StatusCode::Ok,
-                        request_identifier: self.state.rid.0,
-                        op_return,
-                    });
+
+                    match op_complete {
+                        None => {}, // it seems that I died and recovered 
+                        Some(op_complete) => {
+                            op_complete(OperationComplete{
+                                status_code: StatusCode::Ok,
+                                request_identifier: self.state.rid.0,
+                                op_return,
+                            });
+                        },
+                    }
                 },
             }
         }

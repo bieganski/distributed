@@ -98,10 +98,38 @@ async fn tokio_network() {
     assert!(matches!(task.await, Ok(_)));
 }
 
-fn main() {
-    tokio_simple();
-    tokio_spawning_tasks();
-    tokio_filesystem();
-    tokio_sync();
-    tokio_network();
-}
+
+
+#[tokio::main]
+async fn main() {
+    //tokio_simple();
+    //tokio_spawning_tasks();
+    //tokio_filesystem();
+    //tokio_sync();
+    //tokio_network();
+    //
+    tokio::spawn(async{
+        loop {}
+    });
+/*
+    tokio::spawn(async{
+        loop {}
+    });
+    tokio::spawn(async{
+        loop {}
+    });
+    tokio::spawn(async{
+        loop {}
+    });
+    tokio::spawn(async{
+        loop {}
+    });
+    tokio::spawn(async{
+        loop {}
+    });
+    tokio::spawn(async{
+        loop {}
+    });
+
+    */
+    }

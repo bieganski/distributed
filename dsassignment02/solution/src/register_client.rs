@@ -57,8 +57,7 @@ pub mod register_client_public {
                         (*cmd).clone()), 
                     &mut serialized_msg)
             );
-            // TODO tu jestem
-            // brakuje sprawdzania system_key
+            
             let mut mac = Hmac::<Sha256>::new_varkey(&self.hmac_system_key).expect("HMAC can take key of any size");
             mac.update(&serialized_msg);
             let signature = mac.finalize().into_bytes();

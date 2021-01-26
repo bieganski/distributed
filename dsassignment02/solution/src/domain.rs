@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 pub static MAGIC_NUMBER: [u8; 4] = [0x61, 0x74, 0x64, 0x64];
 
+#[derive(Clone)]
 pub struct Configuration {
     /// Hmac key to verify and sign internal requests.
     pub hmac_system_key: [u8; 64],
@@ -13,7 +14,7 @@ pub struct Configuration {
     pub public: PublicConfiguration,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PublicConfiguration {
     /// Storage for durable data.
     pub storage_dir: PathBuf,
