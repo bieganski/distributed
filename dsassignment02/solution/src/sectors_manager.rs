@@ -23,11 +23,12 @@ pub mod sectors_manager_public {
 
     /// Path parameter points to a directory to which this method has exclusive access.
     pub fn build_sectors_manager(path: PathBuf) -> Arc<dyn SectorsManager> {
-        Arc::new(BasicSectorsManager{path})
+        Arc::new(BasicSectorsManager::new(path))
     }
 
     pub struct BasicSectorsManager {
         path: PathBuf,
+        meta_record_size: usize,
     }
 
     impl BasicSectorsManager {
@@ -36,21 +37,51 @@ pub mod sectors_manager_public {
             tmp.push(idx.to_string());
             tmp
         }
+
+        fn metapath(&self) -> PathBuf {
+            let mut tmp = self.path.clone();
+            tmp.push("metafile");
+            tmp
+        }
+
+        fn new(path: PathBuf) -> Self {
+            let example_meta : (u64, u8) = (0xdeadbeef, 0xff);
+            let example_meta2 : (u64, u8) = (0, 0);
+            let example_meta3 : (u64, u8) = (1, 1);
+            let meta_record_size = bincode::serialize(&example_meta).unwrap().len();
+            
+            Self{
+                path,
+                meta_record_size
+            }
+        }
     }
     
     #[async_trait::async_trait]
     impl SectorsManager for BasicSectorsManager {
 
         async fn read_metadata(&self, idx: SectorIdx) -> (u64, u8) {
-            let path = self.filepath(idx);
-            let file = tokio::fs::File::open(&path).await;
-            
-            let mut res = vec![];
+            // let path = self.filepath(idx);
+            let path = self.metapath();
+            // let file = tokio::fs::File::open(&path).await; // TODO tu jestem zrobic read and write
+            let file = tokio::fs::OpenOptions::new()
+                .write(true)
+                .read(true)
+                .open(&path).await;
+
+            let mut res = vec![0; self.meta_record_size];
 
             match file {
                 Ok(mut file) => {
-                    file.seek(SeekFrom::Start(4096)).await.unwrap();
-                    file.read_to_end(&mut res).await.unwrap();
+                    file.seek(SeekFrom::Start((self.meta_record_size * idx as usize) as u64)).await.unwrap();
+                    match file.read_exact(&mut res).await {
+                        Ok(_) => {},
+                        Err(_) => {
+                            file.set_len((self.meta_record_size * (1 + idx) as usize) as u64).await.unwrap();
+                            file.seek(SeekFrom::Start((self.meta_record_size * idx as usize) as u64)).await.unwrap();
+                            file.read_exact(&mut res).await.unwrap();
+                        }
+                    }
                     bincode::deserialize(&res).unwrap()
                 },
                 Err(_) => {
@@ -99,6 +130,22 @@ pub mod sectors_manager_public {
             let SectorVec(data) = &sector.0;
             file.write_all(&data).await.unwrap();
             let meta = (sector.1, sector.2);
+            
+            let path = self.metapath();
+            let file = OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .await;
+            let mut file = match file {
+                Ok(file) => {
+                    file
+                },
+                Err(_) => {
+                    tokio::fs::File::create(path).await.unwrap()
+                },
+            };
+
+            file.seek(SeekFrom::Start((self.meta_record_size * idx as usize) as u64)).await.unwrap();
             file.write_all(&bincode::serialize(&meta).unwrap()).await.unwrap();
         }
     }

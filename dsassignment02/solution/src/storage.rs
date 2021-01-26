@@ -18,6 +18,13 @@ pub mod stable_storage_public {
 
         async fn get(&self, key: &str) -> Option<Vec<u8>>;
     }
+
+    #[async_trait::async_trait]
+    pub trait ConstStableStorage: Send + Sync {
+        async fn put(&self, key: &str, value: &[u8]) -> Result<(), String>;
+
+        async fn get(&self, key: &str) -> Option<Vec<u8>>;
+    }
 }
 
 #[derive(Clone)]
@@ -51,6 +58,39 @@ impl BasicStableStorage {
 #[async_trait::async_trait]
 impl StableStorage for BasicStableStorage {
     async fn put(&mut self, key: &str, value: &[u8]) -> Result<(), String> {
+        let fname = self.key_to_fname(key);
+        log::debug!("[BasicStableStorage] put: trying to open file {:?}", &fname);
+        match tokio::fs::File::create(fname.clone()).await {
+                Ok(mut f) => {
+                f.write_all(value).await.unwrap_or_else(|_| {log::error!("[fs] cannot write to {:?}", &fname);});
+                Ok(())
+            },
+            Err(msg) => Err(msg.to_string())
+        }
+    }
+
+    async fn get(&self, key: &str) -> Option<Vec<u8>> {
+        let fname = self.key_to_fname(key);
+        log::debug!("[BasicStableStorage] get: trying to open file {:?}", &fname);
+        match tokio::fs::File::open(fname.clone()).await {
+            Ok(mut f) => {
+                let mut res = Vec::new();
+                f.read_to_end(&mut res).await.unwrap_or_else(|_| {
+                    log::error!("[fs] cannot read from {:?}", &fname);
+                    return 0;
+                });
+                Some(res)
+            },
+            Err(_) => {
+                None
+            },
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ConstStableStorage for BasicStableStorage {
+    async fn put(&self, key: &str, value: &[u8]) -> Result<(), String> {
         let fname = self.key_to_fname(key);
         log::debug!("[BasicStableStorage] put: trying to open file {:?}", &fname);
         match tokio::fs::File::create(fname.clone()).await {
