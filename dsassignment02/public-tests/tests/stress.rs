@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use ntest::timeout;
 use lazy_static::lazy_static;
 use tempfile::tempdir;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use hmac::{Hmac, Mac, NewMac};
@@ -18,11 +18,12 @@ use std::convert::TryInto;
 
 
 #[tokio::test]
-#[timeout(4000)]
+#[timeout(8000)]
 async fn stress_test() {
     let _ = env_logger::builder().is_test(true).try_init();
 
-    let range = 1..3;
+    // let range = 1..3;
+    let range = 1..10;
 
     let mut addrs = Vec::<(String, u16)>::new();
     let mut tcp_port = 10_000;
@@ -106,19 +107,30 @@ async fn stress_test() {
 
     // TODO tu jestem
     // znaleźć przyczynę.
-    let RANGE : u8 = 25;
+    let SECONDS = 2;
+    let RANGE : u8 = 25 * SECONDS;
 
+    let t1 = Instant::now();
+    
     for i in 1..RANGE {
         let cmd = write_cmd(0, i);
         send_cmd(&cmd, &mut stream, &hmac_client_key).await;
+        
+        let buf = &mut write_response_buf;
+        
+        stream
+            .read_exact(buf)
+            .await
+            .expect("Less data than expected");
     }
-
+    
+    println!("CZAS: {}", t1.elapsed().as_millis());        
     // let mut wtf = vec![];
     // stream.read_to_end(&mut wtf).await; // TODO handle broken pipe
 
     drop(stream);
     
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    tokio::time::sleep(Duration::from_millis(1000 as u64 * SECONDS as u64)).await;
 
     let buf = &mut read_response_buf;
 
@@ -135,10 +147,6 @@ async fn stress_test() {
         .expect("Less data than expected");
 
     compare(buf.to_vec(), vec![RANGE - 1; 4096]);
-
-
-
- 
 }
 
 type HmacSha256 = Hmac<Sha256>;

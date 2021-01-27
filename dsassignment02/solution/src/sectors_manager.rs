@@ -104,6 +104,7 @@ pub mod sectors_manager_public {
         }
 
         async fn write(&self, idx: SectorIdx, sector: &(SectorVec, u64, u8)) {
+            log::info!("SKONCZYLEM WRITE - {:?}, {}, {}", &(sector.0).0[0..5], sector.1, sector.2);
             let path = self.filepath(idx);
             let file = OpenOptions::new()
                 .write(true)

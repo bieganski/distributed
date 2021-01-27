@@ -64,6 +64,8 @@ impl BasicStableStorage {
 impl StableStorage for BasicStableStorage {
     async fn put(&mut self, key: &str, value: &[u8]) -> Result<(), String> {
         let fname = self.key_to_fname(key);
+        log::info!("PUT NA {}", key);
+
         log::debug!("[BasicStableStorage] put: trying to open file {:?}", &fname);
         match tokio::fs::File::create(fname.clone()).await {
                 Ok(mut f) => {
@@ -76,6 +78,9 @@ impl StableStorage for BasicStableStorage {
 
     async fn get(&self, key: &str) -> Option<Vec<u8>> {
         let fname = self.key_to_fname(key);
+        
+        log::info!("GET NA {}", key);
+        
         log::debug!("[BasicStableStorage] get: trying to open file {:?}", &fname);
         match tokio::fs::File::open(fname.clone()).await {
             Ok(mut f) => {

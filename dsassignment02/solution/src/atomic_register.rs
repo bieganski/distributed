@@ -36,7 +36,7 @@ pub mod atomic_register_public {
         processes_count: usize,
     ) -> (Box<dyn AtomicRegister>, Option<ClientRegisterCommand>) {
         build_atomic_register_generic(self_ident, metadata, register_client, sectors_manager, processes_count, 
-            Arc::new(tokio::sync::Mutex::new(HashMap::new())), 0).await
+            Arc::new(tokio::sync::Mutex::new(HashMap::new())), 0, Arc::new(tokio::sync::Mutex::new(0))).await
     }
     
     
@@ -48,17 +48,16 @@ pub mod atomic_register_public {
         processes_count: usize,
         msg_owners: Arc<tokio::sync::Mutex<HashMap<uuid::Uuid, usize>>>,
         my_idx: usize,
+        timestamp_generator: Arc<tokio::sync::Mutex<u64>>,
     ) -> (Box<dyn AtomicRegister>, Option<ClientRegisterCommand>) {
         
         let maybe_pending_cmd = metadata.get(&format!("pending{}", my_idx)).await;
         let pending_cmd = match maybe_pending_cmd {
             None => None,
-            Some(bytes) => bincode::deserialize(&bytes).unwrap(),
+            Some(bytes) => Some(bincode::deserialize(&bytes).unwrap()),
         };
 
         let state = SystemNodeState{
-            ts: Ts(0),
-            wr: Rank(self_ident),
             writeval: SectorVec(Vec::new()),
             readval: SectorVec(Vec::new()),
             rid: RequestId(0),
@@ -69,6 +68,7 @@ pub mod atomic_register_public {
             operation_complete: None,
             msg_owners,
             my_idx,
+            timestamp_generator
         };
         (Box::new(BasicAtomicRegister{self_id: Rank(self_ident), state, metadata, register_client, sectors_manager, processes_count}), pending_cmd)
         
@@ -106,8 +106,6 @@ pub mod atomic_register_public {
     }
 
     struct SystemNodeState {
-        ts: Ts,
-        wr: Rank,
         writeval: SectorVec,
         readval: SectorVec,
         rid: RequestId,
@@ -118,6 +116,7 @@ pub mod atomic_register_public {
         operation_complete: Option<Box<dyn FnOnce(OperationComplete) + Send + Sync>>,
         msg_owners: Arc<tokio::sync::Mutex<HashMap<uuid::Uuid, usize>>>, // used only when using multiple registers
         my_idx: usize, // used only when using multiple registers
+        timestamp_generator: Arc<tokio::sync::Mutex<u64>>, // used only when using multiple registers
     }
 
     struct BasicAtomicRegister {
@@ -168,20 +167,28 @@ pub mod atomic_register_public {
         async fn system_command(&mut self, _: SystemRegisterCommand) {}
     }
 
+    // #[async_trait::async_trait]
     impl BasicAtomicRegister {
         fn highest(&self) -> Rank {
 
             let mut max = (Ts(0), Rank(0));
             let mut max_id = Rank(0);
             for (key, (ts, wr, _)) in &self.state.readlist {
-                if (ts.0, wr.0) > ((max.0).0, (max.1).0) {
+                if (ts.0, wr.0) >= ((max.0).0, (max.1).0) {
                     max_id = *key;
                     max = (*ts, *wr)
                 }
             }
             log::info!("[highest]: found max for {}", max_id.0);
-            assert_ne!(0, max_id.0);
+            // assert_ne!(0, max_id.0);
             max_id
+        }
+
+        async fn fresh_ts(&mut self) -> u64 {
+            let mut guard = self.state.timestamp_generator.lock().await;
+            let res = *guard;
+            *guard += 1;
+            res
         }
     }
 
@@ -231,7 +238,7 @@ pub mod atomic_register_public {
                         // acklist := [ _ ] `of length` N;
                         // readlist := [ _ ] `of length` N;
                         // writing := TRUE;
-                        // store(wr, ts, rid, writeval, writing);
+                        // store(rid, writeval, writing);
                         // trigger < sbeb, Broadcast | [READ_PROC, rid] >;
                         self.state.rid += 1;
                         self.state.writeval = data;
@@ -240,8 +247,6 @@ pub mod atomic_register_public {
                         self.state.writing = true;
                         assert_eq!(self.state.reading, false);
                         vec![
-                            self.metadata.put("wr",  &self.state.wr.0.to_ne_bytes()).await,
-                            self.metadata.put("ts", &self.state.ts.0.to_ne_bytes()).await,
                             self.metadata.put("rid", &self.state.rid.0.to_ne_bytes()).await,
                             self.metadata.put("writeval", &self.state.writeval.0).await,
                             self.metadata.put("writing", &bincode::serialize(&self.state.writing).unwrap()).await,
@@ -271,9 +276,7 @@ pub mod atomic_register_public {
                 ..cmd.header
             };
 
-            // TODO tu jestem
-            // * brak obsługi wielu sektorów - co ze zmienną val?
-            // * store val, writeval
+            let (ts, wr) = self.sectors_manager.read_metadata(cmd.header.sector_idx).await;
             match cmd.content {
                 SystemRegisterCommandContent::ReadProc => {
                     log::info!("[{}][system_command] captured ReadProc from {}", self.self_id.0, cmd.header.process_identifier);
@@ -284,8 +287,8 @@ pub mod atomic_register_public {
                         cmd: Arc::new(SystemRegisterCommand {
                             header: response_header.clone(),
                             content: SystemRegisterCommandContent::Value {
-                                timestamp: self.state.ts.0,
-                                write_rank: self.state.wr.0,
+                                timestamp: ts,
+                                write_rank: wr,
                                 sector_data: val,
                             },
                         })
@@ -342,6 +345,7 @@ pub mod atomic_register_public {
                         // TODO 
                         // rid := rid + 1;
                         // store(rid);
+                        log::info!("XD SKONCZYLEM: {}", maxts.0 + 1);
                         // https://moodle.mimuw.edu.pl/mod/forum/discuss.php?d=4292#p10790
                         self.register_client.broadcast(crate::Broadcast{
                             cmd: Arc::new(SystemRegisterCommand{
@@ -363,17 +367,10 @@ pub mod atomic_register_public {
                     //     store(ts, wr, val);
                     // trigger < pl, Send | p, [ACK, r] >;
 
-                    // TODOO handle val
-
-                    if (timestamp, write_rank) > (self.state.ts.0, self.state.wr.0) {
-                        self.state.ts = Ts(timestamp);
-                        self.state.wr = Rank(write_rank);
+                    let (ts, wr) = self.sectors_manager.read_metadata(cmd.header.sector_idx).await;
+                    log::info!("META SKONCZYLEM: {}", ts);
+                    if (timestamp, write_rank) > (ts, wr) {
                         self.sectors_manager.write(cmd.header.sector_idx, &(data_to_write, timestamp, write_rank)).await;
-
-                        vec![
-                            self.metadata.put("wr",  &self.state.wr.0.to_ne_bytes()).await,
-                            self.metadata.put("ts", &self.state.ts.0.to_ne_bytes()).await,
-                        ].into_iter().for_each(|x| {safe_unwrap!(x)});
                     }
                     self.register_client.send(crate::Send{
                         target: cmd.header.process_identifier as usize, // TODO u8 cast
