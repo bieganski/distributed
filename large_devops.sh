@@ -36,7 +36,7 @@ function dispatch {
 	cd ~/distributed/$base/
 	rm -rf mb385162 
 	mkdir -p mb385162/solution
-	cp -r solution/*.rs mb385162/solution
+	cp -r solution/src mb385162/solution
 	tree mb385162
 	zip -r mb385162.zip mb385162/
 	rm -rf mb385162
