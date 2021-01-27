@@ -65,7 +65,7 @@ pub async fn run_register_process(config_save: Configuration) {
         let config = config_save.clone();
         let hmac_client_key = config.hmac_client_key.clone();
         
-        let storage = BasicStableStorage::new(config.public.storage_dir.clone()).await;
+        let mut storage = BasicStableStorage::new(config.public.storage_dir.clone()).await;
 
         let (mut register, pending_cmd) = build_atomic_register_generic(
             config.public.self_rank,
