@@ -18,7 +18,7 @@ use std::convert::TryInto;
 
 
 #[tokio::test]
-#[timeout(8000)]
+#[timeout(9000)]
 async fn stress_test() {
     let _ = env_logger::builder().is_test(true).try_init();
 

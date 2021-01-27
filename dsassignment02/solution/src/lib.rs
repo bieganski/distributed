@@ -237,7 +237,7 @@ pub async fn run_register_process(config_save: Configuration) {
                     .expect("Less data then expected");
             
                 if header[..4] != MAGIC_NUMBER {
-                    log::error!("[run_register_process] wrong Magic Number!");
+                    log::error!("[run_register_process] wrong Magic Number, consume 8 bytes and read next..");
                     continue;
                 }
         
