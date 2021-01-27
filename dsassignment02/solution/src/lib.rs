@@ -145,7 +145,6 @@ pub async fn run_register_process(config_save: Configuration) {
         let (cmd_tx, mut cmd_rx) = unbounded_channel();
         cmd_txs.lock().await.push(cmd_tx.clone());
 
-        // TODO handle ret_rx
         let (ret_tx, ret_rx) = unbounded_channel();
         ret_rxs.lock().await.push(ret_rx);
 
@@ -169,20 +168,19 @@ pub async fn run_register_process(config_save: Configuration) {
 
                 match cmd {
                     RegisterCommand::Client(cmd) => {
-                        log::info!("Worker received Client command...");
+                        log::info!("Worker received Client command {}...", cmd.header.request_identifier);
                         storage.put(&format!("pending{}", idx), &bincode::serialize(&cmd).unwrap()).await.unwrap();
                         let ret_tx = ret_tx.clone();
                         let rdy_tx = rdy_tx.clone();
                         let storage = storage.clone();
                         register.client_command(cmd.clone(), Box::new(move |op_complete: domain::OperationComplete| {
-                            log::info!("~~~~~~~~~~~ MATINEK LOOK AT ME FIRST!!!!!!! ~~~~~~~~~~");
+                            log::info!("~~~~~~~~~~~ MATINEK - SKONCZYLEM ROBIC {} ~~~~~~~~~~", cmd.header.request_identifier);
                             tokio::spawn(async move {
                                 storage.drop(&format!("pending{}", idx)).await.unwrap_or_else(|_| {});
                             });
                             ret_tx.send(op_complete.op_return).unwrap_or_else(|_| {log::info!("BAD THINGS HAPPENED")});
                             rdy_tx.send(Ready{who: idx}).unwrap_or_else(|_| {log::info!("BAD THINGS HAPPENED")});
                         })).await;
-                        // TODO
                     },
                     RegisterCommand::System(cmd) => {
                         log::info!("-------- REGISTER parsed!");
@@ -211,8 +209,11 @@ pub async fn run_register_process(config_save: Configuration) {
             let mut hmac_signature : &mut Vec<u8> = &mut vec![0_u8; HMAC_TAG_SIZE];
             let msg_owners = msg_owners.clone();
             let ret_rxs = ret_rxs.clone();
-            
+            // let (queue_tx, queue_rx) = unbounded_channel();
             loop {
+                // let queue_res = queue_rx.try_recv(); // TODO tu jestem
+                // match queue_res
+
                 let num = stream.peek(&mut header).await.unwrap();
 
                 if num == 0 {
@@ -281,6 +282,18 @@ pub async fn run_register_process(config_save: Configuration) {
                 mac.update(&header);
                 mac.update(&content);
 
+                match cmd.clone() {
+                    RegisterCommand::Client(cmd) => {
+                        match cmd.content {
+                            ClientRegisterCommandContent::Write{data} => {
+                                log::error!(">>>>>>>>>>>>>>> WRITE: {}", cmd.header.request_identifier);
+                            },
+                            _ => {}
+                        }
+                    },
+                    _ => {},
+                };
+
                 let proper_mac = mac.finalize().into_bytes();
                 if hmac_signature.as_slice() != &*proper_mac {
                     log::error!("wrong HMAC signature! \ngot: {:?}\nexptected: {:?}", hmac_signature.as_slice(), &*proper_mac);
@@ -305,7 +318,7 @@ pub async fn run_register_process(config_save: Configuration) {
                 match cmd.clone() {
                     RegisterCommand::Client(client_cmd) => {
                         if client_cmd.header.sector_idx >= config.public.max_sector {
-                            log::error!("[run_register_process] Too high sector_idx requested! Max is {}, Requested: {}", client_cmd.header.sector_idx, config.public.max_sector);
+                            log::warn!("[run_register_process] Too high sector_idx requested! Max is {}, Requested: {}", client_cmd.header.sector_idx, config.public.max_sector);
                             let status_code = StatusCode::InvalidSectorIndex;
                             let op_return : OperationReturn = match client_cmd.content {
                                 ClientRegisterCommandContent::Read => OperationReturn::Read(ReadReturn{read_data: None}),
@@ -315,20 +328,22 @@ pub async fn run_register_process(config_save: Configuration) {
                             continue;
                         }
                         
-                        let who;
-                        loop {
-                            let Ready{who: whoo} = rdy_rx.lock().await.recv().await.unwrap();
-                            log::info!("{} claims that is ready, maybe abandoning...", whoo);
-                            if whoo == 0 {
-                                who = whoo;
-                                break;
-                            }
-                        }
+                        let Ready{who} = rdy_rx.lock().await.recv().await.unwrap();
+                        
+                        // let who;
+                        // loop {
+                        //     let Ready{who: whoo} = rdy_rx.lock().await.recv().await.unwrap();
+                        //     log::info!("{} claims that is ready, maybe abandoning...", whoo);
+                        //     if whoo == 0 {
+                        //         who = whoo;
+                        //         break;
+                        //     }
+                        // }
 
                         (*cmd_txs.lock().await).get_mut(who).unwrap().send(cmd).unwrap();
 
                         log::info!("sent client cmd for processing to atomic register {} ..", who);
-                
+
                         let ret_rxs = &mut (*ret_rxs.lock().await);
                         let ret_rx = ret_rxs.get_mut(who).unwrap();
                         let op_return = ret_rx.recv().await.unwrap();
@@ -398,5 +413,5 @@ async fn send_response_to_client(
         let response_mac = mac.finalize().into_bytes();
         std::io::Write::write_all(&mut serialized_response, &response_mac).unwrap();
 
-        stream.write_all(serialized_response.get_ref()).await.unwrap();
+        stream.write_all(serialized_response.get_ref()).await.unwrap_or_else(|e| {log::warn!("Cannot send response to client! Error message: {:?}", e)});
 }

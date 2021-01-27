@@ -19,7 +19,7 @@ use std::convert::TryInto;
 
 #[tokio::test]
 #[timeout(4000)]
-async fn multiple_nodes() {
+async fn stress_test() {
     let _ = env_logger::builder().is_test(true).try_init();
 
     let range = 1..3;
@@ -47,79 +47,98 @@ async fn multiple_nodes() {
             hmac_system_key: [1; 64],
             hmac_client_key,
         };
-        println!("spawn");
         handles.push(tokio::spawn(run_register_process(config)));
     }
 
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let request_identifier = 1778;
+    let mut request_identifier = 1778;
+    let mut read_request_identifier = 1778000;
 
-    let write_cmd = RegisterCommand::Client(ClientRegisterCommand {
-        header: ClientCommandHeader {
-            request_identifier,
-            sector_idx: 12,
-        },
-        content: ClientRegisterCommandContent::Write {
-            data: SectorVec(vec![3; 4096]),
-        },
-    });
+    let mut write_cmd = |sector_idx, byte : u8| {
+        request_identifier += 1;
+        log::info!("request_identifier: {}", request_identifier);
+
+        RegisterCommand::Client(ClientRegisterCommand {
+            header: ClientCommandHeader {
+                request_identifier,
+                sector_idx,
+            },
+            content: ClientRegisterCommandContent::Write {
+                data: SectorVec(vec![byte; 4096]),
+            },
+        })
+    };
+
+    let mut read_cmd = |sector_idx| {
+        read_request_identifier += 1;
+        log::info!("read_request_identifier: {}", read_request_identifier);
+
+        RegisterCommand::Client(ClientRegisterCommand {
+            header: ClientCommandHeader {
+                request_identifier: read_request_identifier,
+                sector_idx,
+            },
+            content: ClientRegisterCommandContent::Read{},
+        })
+    };
 
     let mut stream = TcpStream::connect(addrs[0].clone())
         .await
         .expect("Could not connect to TCP port");
 
     // when
-    send_cmd(&write_cmd, &mut stream, &hmac_client_key).await;
+    // let cmd = write_cmd(0, 0_u8);
+    // send_cmd(&cmd, &mut stream, &hmac_client_key).await;
+
+    const EXPECTED_WRITE_RESPONSES_SIZE: usize = 48;
+    const EXPECTED_READ_RESPONSES_SIZE: usize  = 48 + 4096;
+
+    let mut write_response_buf = [0_u8; EXPECTED_WRITE_RESPONSES_SIZE];
+    let mut read_response_buf = [0_u8; EXPECTED_READ_RESPONSES_SIZE];
+
+    let compare = |buf : Vec<u8>, data : Vec<u8>| {
+        assert_eq!(&data[0..5], &buf[16..21]);
+    };
+
+    let buf = &mut write_response_buf;
 
 
-    const EXPECTED_RESPONSES_SIZE: usize = 48;
-    let mut buf = [0_u8; EXPECTED_RESPONSES_SIZE];
-    stream
-        .read_exact(&mut buf)
-        .await
-        .expect("Less data then expected");
+    // TODO tu jestem
+    // znaleźć przyczynę.
+    let RANGE : u8 = 25;
 
-    // asserts for write response
-    assert_eq!(&buf[0..4], MAGIC_NUMBER.as_ref());
-    assert_eq!(buf[7], 0x42);
-    assert_eq!(buf[6], 0x0); // response status - OK
-    assert_eq!(
-        u64::from_be_bytes(buf[8..16].try_into().unwrap()),
-        request_identifier
-    );
-    assert!(hmac_tag_is_ok(&hmac_client_key, &buf));
-
-    // tokio::time::sleep(Duration::from_millis(500)).await;
-    
-    summary();
-    
-    // for h in handles.drain(..) {
-    //     tokio::join!(h);
-    // }
-
-    let source_rank = 1;
-    let target_rank = 2;
-
-    {
-        let bcast = SENT_BCAST.lock().unwrap();
-        let bcasted_from_source : &Vec<SystemRegisterCommand> = bcast.get(&source_rank).unwrap();
-        assert_eq!(bcasted_from_source.len(), 2); // read and write
-
-        let bcasted_from_target : &Vec<SystemRegisterCommand> = bcast.get(&target_rank).unwrap();
-        assert_eq!(bcasted_from_target.len(), 0);
+    for i in 1..RANGE {
+        let cmd = write_cmd(0, i);
+        send_cmd(&cmd, &mut stream, &hmac_client_key).await;
     }
 
-    {
-        let direct = SENT_SINGLE.lock().unwrap();
-        let direct_from_source = direct.get(&source_rank).unwrap();
-        assert_eq!(direct_from_source.len(), 2); // value and ack
-        // assert!(direct_from_source.iter().filter(|x| { (let SystemRegisterCommandContent::Value{} = x.content) as bool; }))
-        // let bcasted_from_target : &Vec<SystemRegisterCommand> = bcast.get(&target_rank).unwrap();
+    // let mut wtf = vec![];
+    // stream.read_to_end(&mut wtf).await; // TODO handle broken pipe
 
-        let direct_from_target = direct.get(&target_rank).unwrap();
-        assert_eq!(direct_from_target.len(), 2); // value and ack
-    }    
+    drop(stream);
+    
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    let buf = &mut read_response_buf;
+
+    let mut stream = TcpStream::connect(addrs[0].clone())
+    .await
+    .expect("Could not connect to TCP port");
+
+    let cmd = read_cmd(0);
+    send_cmd(&cmd, &mut stream, &hmac_client_key).await;
+
+    stream
+        .read_exact(buf)
+        .await
+        .expect("Less data than expected");
+
+    compare(buf.to_vec(), vec![RANGE - 1; 4096]);
+
+
+
+ 
 }
 
 type HmacSha256 = Hmac<Sha256>;
