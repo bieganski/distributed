@@ -187,12 +187,9 @@ pub mod atomic_register_public {
             cmd: ClientRegisterCommand,
             operation_complete: Box<dyn FnOnce(OperationComplete) + Send + Sync>) {
                 self.state.operation_complete = Some(operation_complete);
-                // TODOO sprawdź czy reading || writing
                 assert_eq!(self.state.writing, false);
-                // TODOO po co te UUID?
                 match cmd.content {
                     ClientRegisterCommandContent::Read => {
-                        log::info!("[client_command] captured Client Read (from {})", self.self_id.0);
                         // rid := rid + 1;
                         // store(rid);
                         // readlist := [ _ ] `of length` N;
@@ -206,7 +203,6 @@ pub mod atomic_register_public {
                         self.state.reading = true;
                         let msg_ident = uuid::Uuid::new_v4();
                         self.state.msg_owners.lock().await.insert(msg_ident, self.state.my_idx);
-                        log::info!("[client_command][client-system] sending broadcast ReadProc (from {})", self.self_id.0);
                         self.register_client.broadcast(crate::Broadcast{
                             cmd: Arc::new(SystemRegisterCommand{
                                  header: SystemCommandHeader{
@@ -220,7 +216,6 @@ pub mod atomic_register_public {
                         }).await;
                     },
                     ClientRegisterCommandContent::Write{data} => {
-                        log::info!("[{}][client_command] captured Client Write", self.self_id.0);
                         // rid := rid + 1;
                         // writeval := v;
                         // acklist := [ _ ] `of length` N;
@@ -239,8 +234,6 @@ pub mod atomic_register_public {
                             self.metadata.put("writeval", &self.state.writeval.0).await,
                             self.metadata.put("writing", &bincode::serialize(&self.state.writing).unwrap()).await,
                         ].into_iter().for_each(|x| {safe_unwrap!(x)});
-
-                        log::info!("[{}][client_command][client-system] sending broadcast ReadProc", self.self_id.0);
                         let msg_ident = uuid::Uuid::new_v4();
                         self.state.msg_owners.lock().await.insert(msg_ident, self.state.my_idx);
                         self.register_client.broadcast(crate::Broadcast{
@@ -267,11 +260,10 @@ pub mod atomic_register_public {
             let (ts, wr) = self.sectors_manager.read_metadata(cmd.header.sector_idx).await;
             match cmd.content {
                 SystemRegisterCommandContent::ReadProc => {
-                    log::info!("[{}][system_command] captured ReadProc from {}", self.self_id.0, cmd.header.process_identifier);
                     // trigger < pl, Send | p, [VALUE, r, ts, wr, val] >;
                     let val = self.sectors_manager.read_data(cmd.header.sector_idx).await;
                     self.register_client.send(crate::Send{
-                        target: cmd.header.process_identifier as usize, // TODO u8 cast
+                        target: cmd.header.process_identifier as usize,
                         cmd: Arc::new(SystemRegisterCommand {
                             header: response_header.clone(),
                             content: SystemRegisterCommandContent::Value {
@@ -283,13 +275,10 @@ pub mod atomic_register_public {
                     }).await;
                 },
                 SystemRegisterCommandContent::Value{timestamp, write_rank, sector_data} => {
-                    log::info!("[{}][system_command] captured Value from {}", self.self_id.0, cmd.header.process_identifier);
                     if cmd.header.read_ident != self.state.rid.0 {
-                        log::info!("WAZNE: RID MISMATCH: {} against {}", cmd.header.read_ident, self.state.rid.0);
                         return ();
                     }
                     if !self.state.reading && !self.state.writing {
-                        log::error!("TODO REMOVE ME: test error!: got Value when not performed any action");
                         return ();
                     }
 
@@ -330,11 +319,6 @@ pub mod atomic_register_public {
                             })
                         }).await;
                     } else {
-                        // TODO 
-                        // rid := rid + 1;
-                        // store(rid);
-                        log::info!("XD SKONCZYLEM: {}", maxts.0 + 1);
-                        // https://moodle.mimuw.edu.pl/mod/forum/discuss.php?d=4292#p10790
                         self.register_client.broadcast(crate::Broadcast{
                             cmd: Arc::new(SystemRegisterCommand{
                                     header: response_header.clone(),
@@ -348,7 +332,6 @@ pub mod atomic_register_public {
                     }
                 },
                 SystemRegisterCommandContent::WriteProc{timestamp, write_rank, data_to_write} => {
-                    log::info!("[{}][system_command] captured WriteProc from {}", self.self_id.0, cmd.header.process_identifier);
                     // upon event < sbeb, Deliver | p, [WRITE_PROC, r, ts', wr', v'] > do
                     // if (ts', wr') > (ts, wr) then
                     //     (ts, wr, val) := (ts', wr', v');
@@ -356,7 +339,6 @@ pub mod atomic_register_public {
                     // trigger < pl, Send | p, [ACK, r] >;
 
                     let (ts, wr) = self.sectors_manager.read_metadata(cmd.header.sector_idx).await;
-                    log::info!("META SKONCZYLEM: {}", ts);
                     if (timestamp, write_rank) > (ts, wr) {
                         self.sectors_manager.write(cmd.header.sector_idx, &(data_to_write, timestamp, write_rank)).await;
                     }
@@ -380,7 +362,6 @@ pub mod atomic_register_public {
                     //         writing := FALSE;
                     //         store(writing);
                     //         trigger < nnar, WriteReturn >;
-                    log::info!("[{}][system_command] captured Ack from {}", self.self_id.0, cmd.header.process_identifier);
                     if cmd.header.read_ident != self.state.rid.0 {
                         return ();
                     }
