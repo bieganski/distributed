@@ -144,15 +144,12 @@ pub mod atomic_register_public {
             cmd: ClientRegisterCommand,
             operation_complete: Box<dyn FnOnce(OperationComplete) + Send + Sync>) {
                 let ret = if let ClientRegisterCommandContent::Write{data: _} = cmd.content {
-                    log::info!("detected Write...");
                     OperationReturn::Write{}
                 } else {
-                    log::info!("detected Read...");
                     let dummy_data = SectorVec(vec![0x61; 4096]);
                     OperationReturn::Read(ReadReturn{read_data: Some(dummy_data)})
                 };
 
-                log::info!("client_command from TestClientOkAtomicRegister: calling lambda...");
                 let op_complete = OperationComplete{
                     op_return: ret,
                     request_identifier: cmd.header.request_identifier,
