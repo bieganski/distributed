@@ -140,7 +140,6 @@ pub async fn run_register_process(config_save: Configuration) {
             config.public.tcp_locations.len(),
             msg_owners.clone(), 
             idx,
-            Arc::new(Mutex::new(0)),
         )
         .await;
 
@@ -304,7 +303,7 @@ pub async fn run_register_process(config_save: Configuration) {
                                 ClientRegisterCommandContent::Read => OperationReturn::Read(ReadReturn{read_data: None}),
                                 ClientRegisterCommandContent::Write {data: _} => OperationReturn::Write{},
                             };
-                            // send_response_to_client(&mut stream, cmd.clone(), status_code, op_return, &config.hmac_client_key).await;
+                            send_response_to_client(&mut *arc.lock().await, cmd.clone(), status_code, op_return, &config.hmac_client_key).await;
                             continue;
                         },
                         RegisterCommand::System(_) => {
@@ -323,7 +322,7 @@ pub async fn run_register_process(config_save: Configuration) {
                                 ClientRegisterCommandContent::Read => OperationReturn::Read(ReadReturn{read_data: None}),
                                 ClientRegisterCommandContent::Write {data: _} => OperationReturn::Write{},
                             };
-                            // send_response_to_client(&mut stream, client_cmd.clone(), status_code, op_return, &config.hmac_client_key).await;
+                            send_response_to_client(&mut *arc.lock().await, client_cmd, status_code, op_return, &config.hmac_client_key).await;
                             continue;
                         }
                         

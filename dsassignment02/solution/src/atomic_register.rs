@@ -36,7 +36,7 @@ pub mod atomic_register_public {
         processes_count: usize,
     ) -> (Box<dyn AtomicRegister>, Option<ClientRegisterCommand>) {
         build_atomic_register_generic(self_ident, metadata, register_client, sectors_manager, processes_count, 
-            Arc::new(tokio::sync::Mutex::new(HashMap::new())), 0, Arc::new(tokio::sync::Mutex::new(0))).await
+            Arc::new(tokio::sync::Mutex::new(HashMap::new())), 0).await
     }
     
     
@@ -48,7 +48,6 @@ pub mod atomic_register_public {
         processes_count: usize,
         msg_owners: Arc<tokio::sync::Mutex<HashMap<uuid::Uuid, usize>>>,
         my_idx: usize,
-        timestamp_generator: Arc<tokio::sync::Mutex<u64>>,
     ) -> (Box<dyn AtomicRegister>, Option<ClientRegisterCommand>) {
         
         let maybe_pending_cmd = metadata.get(&format!("pending{}", my_idx)).await;
@@ -68,7 +67,6 @@ pub mod atomic_register_public {
             operation_complete: None,
             msg_owners,
             my_idx,
-            timestamp_generator
         };
         (Box::new(BasicAtomicRegister{self_id: Rank(self_ident), state, metadata, register_client, sectors_manager, processes_count}), pending_cmd)
         
@@ -116,7 +114,6 @@ pub mod atomic_register_public {
         operation_complete: Option<Box<dyn FnOnce(OperationComplete) + Send + Sync>>,
         msg_owners: Arc<tokio::sync::Mutex<HashMap<uuid::Uuid, usize>>>, // used only when using multiple registers
         my_idx: usize, // used only when using multiple registers
-        timestamp_generator: Arc<tokio::sync::Mutex<u64>>, // used only when using multiple registers
     }
 
     struct BasicAtomicRegister {
@@ -179,16 +176,7 @@ pub mod atomic_register_public {
                     max = (*ts, *wr)
                 }
             }
-            log::info!("[highest]: found max for {}", max_id.0);
-            // assert_ne!(0, max_id.0);
             max_id
-        }
-
-        async fn fresh_ts(&mut self) -> u64 {
-            let mut guard = self.state.timestamp_generator.lock().await;
-            let res = *guard;
-            *guard += 1;
-            res
         }
     }
 
