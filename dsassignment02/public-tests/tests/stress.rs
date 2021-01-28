@@ -104,8 +104,6 @@ async fn stress_test() {
     let buf = &mut write_response_buf;
 
 
-    // TODO tu jestem
-    // znaleźć przyczynę.
     let SECONDS = 2;
     let RANGE : u8 = 25 * SECONDS;
 
@@ -124,8 +122,6 @@ async fn stress_test() {
     }
     
     println!("CZAS: {}", t1.elapsed().as_millis());        
-    // let mut wtf = vec![];
-    // stream.read_to_end(&mut wtf).await; // TODO handle broken pipe
 
     drop(stream);
     

@@ -37,6 +37,7 @@ function dispatch {
 	rm -rf mb385162 
 	mkdir -p mb385162/solution
 	cp -r solution/src mb385162/solution
+	cp ~/temp/distributed/dsassignment02/solution/Cargo.toml mb385162/solution
 	tree mb385162
 	zip -r mb385162.zip mb385162/
 	rm -rf mb385162
