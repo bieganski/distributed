@@ -20,8 +20,8 @@
 * **dslab12** - Log replication (Raft)
 
 Large libraries:
-* [Executor](tree/main/dsassignment1/) - Implementation of message-only, shared-nothing architecture (executor with modules), with module that implements Uniform Logged Reliable Broadcast Algorithm
-* [Atomic register](tree/main/dsassignment2/) - Distributed, (N,N) atomic register implementation over TCP (custom protocoli specs), highly concurrent and crash-resistant (state persistency)
+* [Executor](https://github.com/bieganski/distributed/tree/main/dsassignment01) - Implementation of message-only, shared-nothing architecture (executor with modules), with module that implements Uniform Logged Reliable Broadcast Algorithm
+* [Atomic register](https://github.com/bieganski/distributed/tree/main/dsassignment02) - Distributed, (N,N) atomic register implementation over TCP (custom protocoli specs), highly concurrent and crash-resistant (node state persistency)
 
 
 ### Build
