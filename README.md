@@ -14,9 +14,15 @@
 * **dslab06** - simple block read/write device Linux kernel driver
 * **dslab07** - Actix and Tokio examples 
 * **dslab08** - Asynchronous implementation of (1, N) distributed register (Actix)
+* **dslab09** - Atomic Distributed Device
+* **dslab10** - Distributed commit
+* **dslab11** - Consensus
+* **dslab12** - Log replication (Raft)
 
 Large libraries:
-* **dsassignment** - Implementation of message-only, shared-nothing architecture (executor with modules), with module that implements Uniform Logged Reliable Broadcast Algorithm
+* [Executor](dsassignment1/) - Implementation of message-only, shared-nothing architecture (executor with modules), with module that implements Uniform Logged Reliable Broadcast Algorithm
+* [Atomic register](dsassignment2/) - Distributed, (N,N) atomic register implementation over TCP (custom protocoli specs), highly concurrent and crash-resistant (state persistency)
+
 
 ### Build
 
