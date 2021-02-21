@@ -14,11 +14,7 @@ pub mod transfer_public {
 
     const MAGIC: &[u8; 4] = &[0x61, 0x74, 0x64, 0x64];
     const MSG_OFFSET : usize = 7;
-    // TODO those should be used sometime
-    // const RESPONSE_MSG_TYPE_ADD : u8 = 0x40;
-    // const MSG_READ : u8 = 0x1;
-    // const MSG_WRITE : u8 = 0x2;
-
+    
     const REQ_NUM_OFFSET : usize = 8;
     const SECTOR_IDX_OFFSET : usize = 16;
     const HDR_SIZE : usize = 24;
@@ -235,7 +231,6 @@ pub mod transfer_system {
                     content.write_all(&write_rank.to_be_bytes()),
                     content.write_all(&sector),
                 ].into_iter().for_each(|x| {safe_unwrap!(x)});
-                log::info!("serialize Value: len {}", content.buffer().len());
             },
             SystemRegisterCommandContent::Ack{} => {
                 // no content
@@ -268,12 +263,8 @@ pub mod transfer_system {
         }
 
         reader.read_exact(&mut read_buf).unwrap();
-        // if num != 40 {
-        //     panic!("internal error! num!= 40 in {:?}, line: {:?}", file!(), line!())
-        // }
-        let num = reader.read_to_end(&mut content_buf).unwrap();
 
-        println!("num: {:?}", num);
+        let num = reader.read_to_end(&mut content_buf).unwrap();
 
         let uuid : [u8; 16] = read_buf[8..24].try_into().expect("[msg_ident] try_into error");
         
@@ -301,7 +292,8 @@ pub mod transfer_system {
                 )}
             },
             0x6 => {SystemRegisterCommandContent::Ack{}},
-            _ => {panic!("TODO HANDLE ME")},
+            
+            _ => {panic!("MALFORMED MSG TYPE - HANDLE ME")},
         };
 
         Ok(RegisterCommand::System(SystemRegisterCommand{header, content}))

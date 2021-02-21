@@ -39,70 +39,6 @@ use tokio::net::TcpStream;
 
 static HMAC_TAG_SIZE: usize = 32;
 
-use lazy_static::lazy_static;
-
-// aaaa
-// [208, 113, 246, 189, 248, 159, 121, 131, 174, 124, 11, 29, 85, 232, 232, 192, 251, 145, 248, 98, 22, 173, 198, 87, 250, 129, 106, 138, 60, 63, 144, 192]
-
-// 5
-// [208, 44, 139, 113, 235, 130, 112, 216, 61, 51, 205, 224, 101, 27, 220, 123, 244, 158, 170, 150, 137, 97, 254, 144, 2, 103, 175, 53, 114, 29, 36, 174]
-
-
-
-lazy_static! {
-    pub static ref SENT_BCAST:  std::sync::Mutex<HashMap<u8, Vec< SystemRegisterCommand>>>       = std::sync::Mutex::new(HashMap::new());
-    pub static ref SENT_SINGLE: std::sync::Mutex<HashMap<u8, Vec<(SystemRegisterCommand, u8)>>>  = std::sync::Mutex::new(HashMap::new()); // (cmd, target)
-}
-
-pub struct TestRegisterClient {
-    rank: u8,
-    register_client: Box<dyn RegisterClient>,
-}
-
-impl TestRegisterClient {
-    fn new(register_client: Box<dyn RegisterClient>, rank: u8) -> Self {
-        SENT_SINGLE.lock().unwrap().insert(rank, Vec::new());
-        SENT_BCAST.lock().unwrap().insert(rank, Vec::new());
-        
-        Self{
-            rank,
-            register_client,
-        }
-    }
-}
-
-pub fn summary() {
-
-    let mut s = String::from("");
-    s.push_str("\n\n=========== SUMMARY:");
-    for (k, v) in SENT_BCAST.lock().unwrap().iter() {
-        s.push_str(&format!("\n@@@@@ BROADCASTED BY {}:\n", k));
-        for el in v.iter() {
-            s.push_str(&format!("{}", el));
-        }
-    }
-    for (k, v) in SENT_SINGLE.lock().unwrap().iter() {
-        s.push_str(&format!("\n@@@@@ DIRECTLY SENT BY {}:\n", k));
-        for (cmd, target) in v.iter() {
-            s.push_str(&format!("targeted to {}\n{}", target, cmd));
-        }
-    }
-    log::info!("{}", s);
-}
-
-#[async_trait::async_trait]
-impl RegisterClient for TestRegisterClient {
-    async fn send(&self, msg: Send) {
-        (*std::sync::Mutex::lock(&SENT_SINGLE).unwrap()).get_mut(&self.rank).unwrap().push(((*msg.cmd).clone(), msg.target as u8));
-        self.register_client.send(msg).await
-    }
-
-    async fn broadcast(&self, msg: Broadcast) {
-        SENT_BCAST.lock().unwrap().get_mut(&self.rank).unwrap().push((*msg.cmd).clone());
-        self.register_client.broadcast(msg).await
-    }
-}
-
 
 const NUM_WORKERS: usize = 20;
 
@@ -116,12 +52,11 @@ pub async fn run_register_process(config_save: Configuration) {
         .unwrap();
 
     let register_client = BasicRegisterClient::new(config_save.public.tcp_locations.clone(), config_save.hmac_system_key);
-    let register_client = Arc::new(TestRegisterClient::new(Box::new(register_client), config_save.public.self_rank));
+    let register_client = Arc::new(register_client);
     
     let (rdy_tx, rdy_rx) = unbounded_channel();
     let rdy_rx = Arc::new(Mutex::new(rdy_rx));
     let cmd_txs = Arc::new(Mutex::new(vec![]));
-    // let ret_rxs = Arc::new(Mutex::new(vec![]));
 
     let msg_owners : Arc<Mutex<HashMap<uuid::Uuid, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
@@ -130,7 +65,7 @@ pub async fn run_register_process(config_save: Configuration) {
         let config = config_save.clone();
         let hmac_client_key = config.hmac_client_key.clone();
         
-        let storage = BasicStableStorage::new(config.public.storage_dir.clone()).await;
+        let mut storage = BasicStableStorage::new(config.public.storage_dir.clone()).await;
 
         let (mut register, pending_cmd) = build_atomic_register_generic(
             config.public.self_rank,
@@ -146,12 +81,8 @@ pub async fn run_register_process(config_save: Configuration) {
         let (cmd_tx, mut cmd_rx) : (UnboundedSender<(RegisterCommand, Option<Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>>)>, _) = unbounded_channel();
         cmd_txs.lock().await.push(cmd_tx.clone());
 
-        // let (ret_tx, ret_rx) = unbounded_channel();
-        // ret_rxs.lock().await.push(ret_rx);
-
         let rdy_tx = rdy_tx.clone();
         tokio::spawn(async move {
-            log::info!("worker {} starts loop...", idx);
             let pending_cmd = match pending_cmd {
                 None => None,
                 Some(cmd) => match cmd.content {
@@ -161,7 +92,7 @@ pub async fn run_register_process(config_save: Configuration) {
             };
             // if there is no pending command from reboot, then I can change state to READY
             match pending_cmd {
-                None => rdy_tx.send(Ready{who: idx}).unwrap_or_else(|_| {log::info!("BAD THINGS HAPPENED")}),
+                None => rdy_tx.send(Ready{who: idx}).unwrap_or_else(|_| {log::info!("Error sending Ready message...")}),
                 Some(cmd) => {
                     cmd_tx.send((cmd, None)).unwrap()
                 },
@@ -171,32 +102,29 @@ pub async fn run_register_process(config_save: Configuration) {
 
                 match cmd {
                     RegisterCommand::Client(cmd) => {
-                        log::info!("Worker received Client command {}...", cmd.header.request_identifier);
                         storage.put(&format!("pending{}", idx), &bincode::serialize(&cmd).unwrap()).await.unwrap();
-                        // let ret_tx = ret_tx.clone();
                         let rdy_tx = rdy_tx.clone();
                         let storage = storage.clone();
                         register.client_command(cmd.clone(), Box::new(move |op_complete: domain::OperationComplete| {
-                            log::info!("~~~~~~~~~~~ MATINEK - SKONCZYLEM ROBIC {} ~~~~~~~~~~", cmd.header.request_identifier);
                             let op_return = op_complete.op_return.clone();
                             tokio::spawn(async move {
                                 storage.drop(&format!("pending{}", idx)).await.unwrap_or_else(|_| {});
 
-                                let arc = arc.unwrap(); // TODO remove me if testing crash-recovery
-
-                                send_response_to_client(
-                                    &mut *arc.lock().await,
-                                    cmd,
-                                    StatusCode::Ok,
-                                    op_return,
-                                    &hmac_client_key,
-                                ).await;
+                                match arc {
+                                    Some(arc) => send_response_to_client(
+                                        &mut *arc.lock().await,
+                                        cmd,
+                                        StatusCode::Ok,
+                                        op_return,
+                                        &hmac_client_key,
+                                    ).await,
+                                    None => {},
+                                }
                             });
-                            rdy_tx.send(Ready{who: idx}).unwrap_or_else(|_| {log::info!("BAD THINGS HAPPENED")});
+                            rdy_tx.send(Ready{who: idx}).unwrap_or_else(|_| {log::info!("Error receiving Ready message...")});
                         })).await;
                     },
                     RegisterCommand::System(cmd) => {
-                        log::info!("-------- REGISTER parsed!");
                         register.system_command(cmd).await;
                     },
                 }
@@ -227,7 +155,6 @@ pub async fn run_register_process(config_save: Configuration) {
                 let num = read_stream.peek(&mut header).await.unwrap();
 
                 if num == 0 {
-                    log::info!("EXTREMELY IMPORTANT - MATINEK, REMOVE ME IF U SURE. connection closed.");
                     return ();
                 }
 
@@ -248,8 +175,6 @@ pub async fn run_register_process(config_save: Configuration) {
                     continue
                 }
         
-                log::info!("[proc {}]: header[7]: {}", config.public.self_rank, header[7]);
-        
                 // let content : &mut Vec<u8> = if header[7] == 0x1 {read_content} else {write_content};
                 let mut content : Vec<u8> = match header[7] {
                     0x1 => {vec![0_u8; 16]}, // client read
@@ -266,13 +191,6 @@ pub async fn run_register_process(config_save: Configuration) {
                     .read_exact(&mut content)
                     .await
                     .expect("Less data then expected");
-        
-                // TODO REMOVE ME
-                for i in 0..content.len() - 3 {
-                    if &MAGIC_NUMBER as &[u8] == &content[i..i+4 as usize] {
-                        assert!(false);
-                    }
-                }
         
                 read_stream
                     .read_exact(&mut hmac_signature)

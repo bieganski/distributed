@@ -12,7 +12,6 @@ async fn drive_can_store_data() {
     let root_drive_dir = tempdir().unwrap();
     let mut path = PathBuf::new();
     path.push(root_drive_dir.path());
-    // path.push("./omg");
     let sectors_manager = build_sectors_manager(path);
 
     // when

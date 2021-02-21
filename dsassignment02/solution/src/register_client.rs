@@ -33,6 +33,7 @@ pub mod register_client_public {
         pub target: usize,
     }
 
+    #[derive (Clone)]
     pub struct BasicRegisterClient {
         tcp_locations: Vec<(String, u16)>,
         hmac_system_key: [u8; 64],

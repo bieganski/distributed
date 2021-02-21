@@ -1,7 +1,6 @@
 use assignment_2_solution::{
     RegisterClient, Send, Broadcast, SystemRegisterCommand, Configuration, PublicConfiguration, run_register_process, 
     RegisterCommand, ClientRegisterCommand, ClientRegisterCommandContent, serialize_register_command, SectorVec, ClientCommandHeader,
-    summary, SENT_BCAST, SENT_SINGLE, MAGIC_NUMBER
 };
 use std::sync::{Mutex, Arc};
 use std::collections::HashMap;

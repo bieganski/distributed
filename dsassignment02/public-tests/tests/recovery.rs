@@ -21,8 +21,6 @@ async fn test_recovery() {
 
     
     let mut storage_dir = tempdir().unwrap().into_path();
-    // let mut storage_dir = PathBuf::new();
-    // storage_dir.push("/home/mateusz/dsas2test/");
 
     let mut storage = BasicStableStorage::new(storage_dir.clone()).await;
 
